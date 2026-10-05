@@ -30,7 +30,6 @@ class MMDPHYS_PT_main(bpy.types.Panel):
         layout.prop(st, "live")
         if st.pv_active:
             layout.label(text="预览中:改物理类型/碰撞组要重新开始预览才生效", icon='PLAY')
-        layout.label(text="衣服、头发的调节后续版本加入", icon='INFO')
 
 
 class _GroupPanel:
@@ -127,14 +126,17 @@ class _GroupPanel:
 
 
 class MMDPHYS_PT_breast(_GroupPanel, bpy.types.Panel):
-    bl_label = "胸部"
+    bl_label = "胸部刚体(调参 / 导出 PMX)"
     bl_idname = "MMDPHYS_PT_breast"
+    bl_order = 1
+    bl_options = {'DEFAULT_CLOSED'}
     group = "breast"
 
 
 class MMDPHYS_PT_preview(bpy.types.Panel):
     bl_label = "预览 / 导出"
     bl_idname = "MMDPHYS_PT_preview"
+    bl_order = 2
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "MMD物理"

@@ -1,0 +1,513 @@
+"""效果选择(渲染用)的流程:胸部 / 头发 / 裙子 / 其他衣物各选一种方式,一键算好,一键还原。
+
+apply(scene, root, plan):
+1. 第一次:记下原值 —— 刚体(类型、质量、阻尼、摩擦、反弹、碰撞层)、关节(限位、弹簧、Blender 的弹簧设置)、
+   场景重力、原动作(加假用户留着)、原来是否已「建立」物理。
+2. 每次都从原值开始:清除物理 → 刚体 / 关节写回原值 → 动作换成原动作的新副本(上次的副本删掉)。
+3. 选「MMD 刚体」的类:按预设改刚体 / 关节(rigidfx.py)。
+4. 选其他方式的类:它们的摆动刚体改成跟骨(原类型记在刚体上,chains.ORIG_TYPE)。
+5. 建立物理(mmd_tools),关掉刚体世界,按依赖顺序烘弹簧骨骼(kawaii.py)和骨骼布料(bonecloth.py)的链:
+   挂在别的链上的链后烘,读到的是前面烘好的姿势。
+6. 物理计算「MMD 同款」:关节换成 MMD 的弹簧(SPRING1、没有关节阻尼、旋转弹簧按缩放换算)、重力 98 单位/秒²、
+   每个谁都不碰的刚体单独一个碰撞层(否则手会穿进胸里把胸顶开);「mmd_tools 原样」不换算。打开刚体世界,清缓存。
+restore(scene, root):清除物理 → 原值 → 原动作 → 原重力 → 删掉本插件加的碰撞体 → 原来建立着就再建立。
+
+plan(effects_ui 从面板拼出来,脚本也可以自己拼):
+  {"categories": {"BUST": {"method": "SPRING", "values": {...}}, ...},
+   "groups": [{"name", "category", "bones": [...], "roots": [...], "tip": bool, "enabled": bool}, ...],
+   "physics": "MMD" | "MMDTOOLS", "gravity_scale": 1.0, "scale": 12.5}
+"""
+
+import json
+import time
+
+import bpy
+import numpy as np
+
+from . import bonecloth, chains, kawaii, rigidfx
+
+STATE = "mmd_physics_fx_state"             # 根对象上:原值(JSON)
+WORK = "mmd_physics_fx_work"               # 动作上:本插件建的工作副本
+MMD_GRAVITY = 98.0                         # MMD 的重力,单位/秒²
+AXES6 = ("x", "y", "z", "ang_x", "ang_y", "ang_z")
+LIMITS = tuple("limit_%s_%s_%s" % (k, a, e) for k in ("lin", "ang") for a in "xyz" for e in ("lower", "upper"))
+
+
+def _model(root):
+    from mmd_tools.core.model import Model
+    return Model(root)
+
+
+# -- 识别 -------------------------------------------------------------------------------------------------
+def detect_groups(arm):
+    """面板的分组列表:每条胸链一组,其余按 chains.cloth_groups。"""
+    bust, cloth = chains.detect(arm)
+    out = []
+    for c in bust:
+        out.append({"name": "%s(%s)" % (c.root, "左" if c.side == "L" else "右"), "category": "BUST",
+                    "bones": list(c.bones), "roots": [c.root], "tip": bool(c.tip), "enabled": True})
+    for g in cloth:
+        out.append({"name": g.name, "category": g.category, "bones": list(g.bones),
+                    "roots": chains.chain_roots(arm, g.bones), "tip": False, "enabled": True})
+    return out
+
+
+# -- 原值 -------------------------------------------------------------------------------------------------
+def _body_rec(o):
+    rb = o.rigid_body
+    rec = {"type": o.mmd_rigid.type}
+    if rb is not None:
+        rec.update(mass=rb.mass, lin=rb.linear_damping, ang=rb.angular_damping, friction=rb.friction,
+                   bounce=rb.restitution, cols=[bool(x) for x in rb.collision_collections])
+    return rec
+
+
+def _put_body(o, rec):
+    if o.mmd_rigid.type != rec["type"]:
+        o.mmd_rigid.type = rec["type"]
+    rb = o.rigid_body
+    if rb is not None and "mass" in rec:
+        rb.mass, rb.linear_damping, rb.angular_damping = rec["mass"], rec["lin"], rec["ang"]
+        rb.friction, rb.restitution = rec["friction"], rec["bounce"]
+        rb.collision_collections = rec["cols"]
+    if chains.ORIG_TYPE in o:
+        del o[chains.ORIG_TYPE]
+
+
+def _joint_rec(j):
+    c = j.rigid_body_constraint
+    rec = {k: getattr(c, k) for k in LIMITS}
+    rec["spring_type"] = c.spring_type
+    rec["damp"] = [getattr(c, "spring_damping_" + a) for a in AXES6]
+    rec["use"] = [getattr(c, "use_spring_" + a) for a in AXES6]
+    rec["k_lin"] = list(j.mmd_joint.spring_linear)
+    rec["k_ang"] = list(j.mmd_joint.spring_angular)
+    return rec
+
+
+def _put_joint(j, rec):
+    c = j.rigid_body_constraint
+    for k in LIMITS:
+        setattr(c, k, rec[k])
+    j.mmd_joint.spring_linear = rec["k_lin"]          # mmd_tools 顺手把约束的弹簧刚度写回原数
+    j.mmd_joint.spring_angular = rec["k_ang"]
+    c.spring_type = rec["spring_type"]
+    for a, d, u in zip(AXES6, rec["damp"], rec["use"]):
+        setattr(c, "spring_damping_" + a, d)
+        setattr(c, "use_spring_" + a, u)
+
+
+def _state(root):
+    return json.loads(root[STATE]) if STATE in root else None
+
+
+def _save(root, state):
+    root[STATE] = json.dumps(state, ensure_ascii=False)
+
+
+def ensure_backup(scene, root):
+    state = _state(root)
+    if state is not None:
+        return state
+    m = _model(root)
+    arm = m.armature()
+    action = arm.animation_data.action if arm.animation_data else None
+    state = {
+        "bodies": {o.name: _body_rec(o) for o in m.rigidBodies()},
+        "joints": {j.name: _joint_rec(j) for j in m.joints() if j.rigid_body_constraint is not None},
+        "gravity": list(scene.gravity), "use_gravity": scene.use_gravity,
+        "built": bool(root.mmd_root.is_built),
+        "action": action.name if action is not None else "",
+        "action_fake": bool(action.use_fake_user) if action is not None else False,
+        "colliders": [],
+    }
+    _save(root, state)
+    return state
+
+
+def _restore_values(m, state):
+    for o in m.rigidBodies():
+        rec = state["bodies"].get(o.name)
+        if rec is not None:
+            _put_body(o, rec)
+    for j in m.joints():
+        rec = state["joints"].get(j.name)
+        if rec is not None and j.rigid_body_constraint is not None:
+            _put_joint(j, rec)
+
+
+def _fresh_action(arm, state):
+    """动作换成原动作的新副本。用户期间换了动作(重新导入 VMD)就以新的为原动作。"""
+    ad = arm.animation_data
+    cur = ad.action if ad else None
+    orig = bpy.data.actions.get(state["action"]) if state["action"] else None
+    if cur is not None and not cur.get(WORK) and cur is not orig:
+        orig = cur
+        state["action"], state["action_fake"] = cur.name, bool(cur.use_fake_user)
+    if orig is None:
+        return None
+    orig.use_fake_user = True                      # 工作副本上场后原动作没有用户,靠假用户留着
+    if cur is not None and cur.get(WORK):
+        ad.action = orig
+        bpy.data.actions.remove(cur)
+    work = orig.copy()
+    work.name = orig.name + ".物理效果"
+    work[WORK] = True
+    work.use_fake_user = False
+    ad.action = work
+    return work
+
+
+# -- 链的单位和顺序 -----------------------------------------------------------------------------------------
+class Unit:
+    """一起模拟的一批骨(同一类、同一种方式;挂在同类别的链上的链并进来)。"""
+
+    def __init__(self, category, method, values):
+        self.category, self.method, self.values = category, method, values
+        self.bones, self.tip, self.level = [], False, 0
+
+    def anchors(self, arm):
+        s = set(self.bones)
+        return {arm.data.bones[r].parent.name for r in chains.chain_roots(arm, self.bones)
+                if arm.data.bones[r].parent is not None} - s
+
+
+def _units(arm, groups, categories):
+    """按方式分好的单位,带层级(0 = 挂在不模拟的骨上;1 = 挂在第 0 层的骨上……)。"""
+    plain = []
+    for g in groups:
+        if not g.get("enabled", True):
+            continue
+        cat = categories.get(g["category"])
+        if cat is None or cat["method"] not in ("SPRING", "CLOTH"):
+            continue
+        u = Unit(g["category"], cat["method"], cat["values"])
+        u.bones, u.tip = list(g["bones"]), bool(g.get("tip"))
+        plain.append(u)
+    # 同类同方式、挂在对方骨上的并成一个
+    merged = True
+    while merged:
+        merged = False
+        for a in plain:
+            for b in plain:
+                if a is b or a.category != b.category or a.method != b.method:
+                    continue
+                if a.anchors(arm) & set(b.bones):
+                    b.bones = [n.name for n in arm.data.bones if n.name in set(b.bones) | set(a.bones)]
+                    b.tip = b.tip or a.tip
+                    plain.remove(a)
+                    merged = True
+                    break
+            if merged:
+                break
+    owner = {n: u for u in plain for n in u.bones}
+    for _ in range(len(plain)):
+        changed = False
+        for u in plain:
+            lv = max([owner[a].level + 1 for a in u.anchors(arm) if a in owner and owner[a] is not u] or [0])
+            if lv != u.level:
+                u.level, changed = lv, True
+        if not changed:
+            break
+    return plain
+
+
+def _kawaii_specs(arm, units, colliders):
+    out = []
+    scale_m = kawaii.cm_to_m(arm)
+    for u in units:
+        v = u.values
+        settings = {k: v[k] for k in ("stiffness", "damping", "world_damping_location", "world_damping_rotation",
+                                     "limit_angle", "radius_cm")}
+        settings["gravity_cm"] = (0.0, 0.0, -float(v.get("gravity_cm", 0.0)))
+        settings["target_fps"] = int(v.get("target_fps", 60))
+        settings["allow_legs"] = bool(v.get("allow_legs", False))
+        caps = []
+        if v.get("capsules"):
+            caps += kawaii.vindictus_capsules(arm, scale_m)
+        if v.get("colliders"):
+            anchors = sorted(u.anchors(arm))
+            centre = body_centre(arm, anchors[0]) if anchors else None
+            # 腿的碰撞体在链底下动(不跟链挂在同一根身体骨上):第一帧陷进去多少不放过
+            caps += [kawaii.ObjectCapsule(arm, o, moving=o.parent_bone != centre) for o in colliders]
+        tip = float(v.get("tip", 0.0)) or (1.0 if u.tip else 0.0)
+        carrier = None if v.get("carrier", "NONE") in ("NONE", "", None) else v["carrier"]
+        members = set(u.bones)
+        for root in chains.chain_roots(arm, u.bones):
+            out.append(kawaii.spec(kawaii.Chain(arm, root, members=members, tip=tip), settings, carrier, caps,
+                                   rest_allow=True))
+    return out
+
+
+BODY_BONES = ("頭", "首", "上半身3", "上半身2", "上半身", "下半身", "センター",
+              "左肩", "右肩", "左腕", "右腕", "左ひじ", "右ひじ", "左手首", "右手首", "左足", "右足", "左ひざ", "右ひざ")
+
+
+def body_centre(arm, anchor):
+    """骨骼布料的「身体」骨(惯性和背挡的轴):挂点骨往上最近的标准 MMD 身体骨。Vindictus 的裙子挂在
+    Outfit005_skirt_root 上,那根骨朝前上方,拿它当轴背挡会把后面、侧面的裙片往上推。"""
+    b = arm.data.bones.get(anchor) if anchor else None
+    while b is not None:
+        if any(n in BODY_BONES for n in chains.names_of(arm.pose.bones[b.name])):
+            return b.name
+        b = b.parent
+    return anchor
+
+
+def _batch_cloth(arm, units):
+    """同一层、同一类、挂在同一根身体骨上的骨骼布料单位并成一批,一起模拟(参数相同,numpy 只走一遍)。"""
+    batches = {}
+    for u in units:
+        roots = chains.chain_roots(arm, u.bones)
+        anchors = sorted({arm.data.bones[r].parent.name for r in roots if arm.data.bones[r].parent is not None})
+        key = (u.category, body_centre(arm, anchors[0]) if anchors else None)
+        b = batches.get(key)
+        if b is None:
+            b = batches[key] = Unit(u.category, u.method, u.values)
+            b.level = u.level
+        b.bones = [n.name for n in arm.data.bones if n.name in set(b.bones) | set(u.bones)]
+    return list(batches.values())
+
+
+def _sample(scene, arm, units, frames, colliders):
+    """骨骼布料各单位的动画姿势(世界空间)、挂点骨矩阵、碰撞体、链外父骨,一次过帧全部读出。"""
+    out = {}
+    for u in units:
+        cs = bonecloth.chain_set(arm, u.bones)
+        roots = [n for n, p in zip(cs.names, cs.parent) if p < 0]
+        anchors = sorted({arm.data.bones[n].parent.name for n in roots if arm.data.bones[n].parent is not None})
+        names = cs.names
+        out[id(u)] = dict(cs=cs, centre=body_centre(arm, anchors[0]) if anchors else None,
+                          pbs=[arm.pose.bones[n] for n in names],
+                          par=sorted({arm.pose.bones[n].parent.name for n in names
+                                      if arm.pose.bones[n].parent is not None
+                                      and arm.pose.bones[n].parent.name not in names}),
+                          base=[], cen=[], caps=[], parents=[], colliders=colliders if u.values.get("colliders") else [])
+    for f in frames:
+        scene.frame_set(f)
+        A = arm.matrix_world
+        for u in units:
+            d = out[id(u)]
+            pbs = d["pbs"]
+            d["base"].append({"rot": np.array([np.array((A @ pb.matrix).to_3x3().normalized()) for pb in pbs]),
+                              "head": np.array([tuple(A @ pb.head) for pb in pbs]),
+                              "tail": np.array([tuple(A @ pb.tail) for pb in pbs])})
+            d["cen"].append(np.array(A @ arm.pose.bones[d["centre"]].matrix) if d["centre"] else np.array(A))
+            d["caps"].append(bonecloth._capsules(d["colliders"]) if d["colliders"] else None)
+            d["parents"].append({n: arm.pose.bones[n].matrix.copy() for n in d["par"]})
+    for d in out.values():
+        if all(c is None for c in d["caps"]):
+            d["caps"] = None
+    return out
+
+
+def _hide_meshes(root):
+    """烘焙时先把模型的网格藏起来(逐帧求值快很多)。腿和胯的碰撞体也是网格,但不能藏:hide_viewport 的物体
+    不参与求值,胶囊会一直停在第一帧,不跟腿走,裙子撞上留在原地的胶囊就被顶起来卡住。"""
+    hidden = []
+    for o in root.children_recursive:
+        if o.type == "MESH" and getattr(o, "mmd_type", "") == "NONE" and not o.hide_viewport \
+                and not o.get(bonecloth.COLLIDER_TAG):
+            o.hide_viewport = True
+            hidden.append(o)
+    return hidden
+
+
+# -- 物理计算 ----------------------------------------------------------------------------------------------
+def own_layers(m):
+    """每个和所有组都不碰的刚体单独一个碰撞层(19, 18, ……):MMD 里它们谁都不碰,mmd_tools 只给开始时挨着的
+    刚体之间加了不碰撞约束,手臂甩过来照样会撞上胸。"""
+    layer = 19
+    for o in m.rigidBodies():
+        if o.rigid_body is not None and all(o.mmd_rigid.collision_group_mask) and layer > 0:
+            o.rigid_body.collision_collections = [i == layer for i in range(20)]
+            layer -= 1
+    return 19 - layer
+
+
+def mmd_like(scene, m, scale, gravity_scale=1.0):
+    """关节按 MMD 的方式:SPRING1、关节阻尼 0(Blender 把 SPRING1 的阻尼取反,0 = Bullet 的默认 1.0 = MMD)、
+    旋转弹簧 × (1/scale)²(弹簧量纲带长度²)、平移弹簧不变;重力 98 单位/秒² 换成米。返回换算的关节数。"""
+    s = 1.0 / scale
+    n = 0
+    for j in m.joints():
+        c = j.rigid_body_constraint
+        if c is None or c.type != "GENERIC_SPRING":
+            continue
+        c.spring_type = "SPRING1"
+        for a in AXES6:
+            setattr(c, "spring_damping_" + a, 0.0)
+        kl, ka = j.mmd_joint.spring_linear, j.mmd_joint.spring_angular
+        c.spring_stiffness_x, c.spring_stiffness_y, c.spring_stiffness_z = kl[0], kl[1], kl[2]
+        c.spring_stiffness_ang_x, c.spring_stiffness_ang_y, c.spring_stiffness_ang_z = (
+            ka[0] * s * s, ka[1] * s * s, ka[2] * s * s)
+        n += 1
+    own_layers(m)
+    scene.use_gravity = True
+    scene.gravity = (0.0, 0.0, -MMD_GRAVITY * s * gravity_scale)
+    return n
+
+
+def free_cache(scene):
+    world = scene.rigidbody_world
+    if world is None:
+        return
+    world.point_cache.frame_start = scene.frame_start
+    world.point_cache.frame_end = scene.frame_end
+    with bpy.context.temp_override(scene=scene, point_cache=world.point_cache):
+        bpy.ops.ptcache.free_bake()
+
+
+def bake_cache(scene):
+    """渲染前烘焙刚体缓存(场景帧范围)。"""
+    world = scene.rigidbody_world
+    if world is None:
+        return False
+    world.point_cache.frame_start = scene.frame_start
+    world.point_cache.frame_end = scene.frame_end
+    with bpy.context.temp_override(scene=scene, point_cache=world.point_cache):
+        bpy.ops.ptcache.free_bake()
+        bpy.ops.ptcache.bake(bake=True)
+    return True
+
+
+# -- 主流程 ------------------------------------------------------------------------------------------------
+def apply(scene, root, plan, log=print):
+    t0 = time.time()
+    m = _model(root)
+    arm = m.armature()
+    state = ensure_backup(scene, root)
+    if root.mmd_root.is_built:
+        m.clean()
+    _restore_values(m, state)
+    work = _fresh_action(arm, state)
+    cats = plan["categories"]
+    groups = [g for g in plan["groups"] if g.get("enabled", True)]
+    by_cat = {}
+    for g in groups:
+        by_cat.setdefault(g["category"], []).append(g)
+    report = []
+    # 3. MMD 刚体的类:预设写进刚体 / 关节
+    for cat, gs in by_cat.items():
+        c = cats.get(cat)
+        if c is None or c["method"] != "RIGID":
+            continue
+        bones = [n for g in gs for n in g["bones"]]
+        if cat == "BUST":
+            lines = rigidfx.apply_bust(m, bones, c["values"], plan.get("scale", 12.5))
+            report.append("胸部 MMD 刚体:%s" % ("模型原样" if not lines else ";".join(lines)))
+        else:
+            n = rigidfx.apply_chains(m, bones, c["values"])
+            report.append("%s MMD 刚体:%s" % (chains.CATEGORY_LABEL[cat], "改了 %d 个刚体" % n if n else "模型原样"))
+    # 4. 其他方式的类:摆动刚体改成跟骨
+    follow = set()
+    for cat, gs in by_cat.items():
+        c = cats.get(cat)
+        if c is not None and c["method"] != "RIGID":
+            follow.update(n for g in gs for n in g["bones"])
+    changed = 0
+    for o in m.rigidBodies():
+        if o.mmd_rigid.bone in follow and chains.body_type(o) in ("1", "2"):
+            if chains.ORIG_TYPE not in o:
+                o[chains.ORIG_TYPE] = o.mmd_rigid.type
+            o.mmd_rigid.type = "0"
+            changed += 1
+    # 碰撞体(腿、胯),要的单位才建
+    units = _units(arm, groups, cats)
+    colliders = bonecloth.collider_objects(arm)
+    if any(u.values.get("colliders") for u in units) and not colliders:
+        colliders = bonecloth.add_body_colliders(arm, log=lambda s: None)
+        state["colliders"] = sorted(set(state.get("colliders", [])) | {o.name for o in colliders})
+    # 5. 建立物理,烘链
+    scene.frame_set(scene.frame_start)
+    t = time.time()
+    m.build()
+    report.append("建立物理 %.1f 秒" % (time.time() - t))
+    world = scene.rigidbody_world
+    world_on = world.enabled if world is not None else False
+    if world is not None:
+        world.enabled = False
+    hidden = _hide_meshes(root)
+    frames = list(range(scene.frame_start, scene.frame_end + 1))
+    fps = scene.render.fps / scene.render.fps_base
+    try:
+        for level in sorted({u.level for u in units}):
+            lv = [u for u in units if u.level == level]
+            springs = [u for u in lv if u.method == "SPRING"]
+            if springs:
+                t = time.time()
+                specs = _kawaii_specs(arm, springs, colliders)
+                fr, bases = kawaii.simulate(scene, arm, specs)
+                kawaii.write_keys(arm, fr, bases, tag=False)
+                report.append("弹簧骨骼(第 %d 层):%d 条链 %d 根骨,%.1f 秒" % (level, len(specs), len(bases),
+                                                                          time.time() - t))
+            cloths = _batch_cloth(arm, [u for u in lv if u.method == "CLOTH"])
+            if cloths:
+                t = time.time()
+                rests = {id(u): bonecloth.rest_pose(scene, arm, bonecloth.chain_set(arm, u.bones).names, colliders)
+                         if u.values.get("colliders") else None for u in cloths}
+                data = _sample(scene, arm, cloths, frames, colliders)
+                for u in cloths:
+                    d = data[id(u)]
+                    if rests[id(u)] is not None:
+                        # 不跟布料挂在同一根身体骨上的碰撞体(腿)在布料底下动,静止时陷进去多少不放过
+                        rests[id(u)]["moving"] = [o.parent_bone != d["centre"] for o in colliders]
+                    params = {k: v for k, v in u.values.items() if k != "colliders"}
+                    params["unit"] = bonecloth.metres_per_unit(arm)
+                    sim = bonecloth.simulate(d["cs"], d["base"], d["cen"], d["caps"], fps, params, rest=rests[id(u)])
+                    bonecloth.write_keys(arm, d["cs"], frames, sim, d["parents"])
+                report.append("骨骼布料(第 %d 层):%d 批 %d 根骨,%.1f 秒" % (
+                    level, len(cloths), sum(len(u.bones) for u in cloths), time.time() - t))
+    finally:
+        for o in hidden:
+            o.hide_viewport = False
+        if world is not None:
+            world.enabled = world_on
+    # 6. 物理计算
+    if plan.get("physics", "MMD") == "MMD":
+        n = mmd_like(scene, m, plan.get("scale", 12.5), plan.get("gravity_scale", 1.0))
+        report.append("物理按 MMD 同款:%d 个关节换算,重力 %g 单位/秒²" % (n, MMD_GRAVITY * plan.get("gravity_scale", 1.0)))
+    else:
+        scene.gravity, scene.use_gravity = state["gravity"], state["use_gravity"]
+    world = scene.rigidbody_world
+    if world is not None:
+        world.enabled = True
+    free_cache(scene)
+    scene.frame_set(scene.frame_start)
+    _save(root, state)
+    report.append("跟骨的刚体 %d 个,用时 %.1f 秒%s" % (changed, time.time() - t0,
+                                                 ",动作副本 " + work.name if work is not None else ""))
+    for line in report:
+        log(line)
+    return report
+
+
+def restore(scene, root):
+    """回到第一次用效果之前。返回 False = 没用过。"""
+    state = _state(root)
+    if state is None:
+        return False
+    m = _model(root)
+    arm = m.armature()
+    if root.mmd_root.is_built:
+        m.clean()
+    _restore_values(m, state)
+    ad = arm.animation_data
+    cur = ad.action if ad else None
+    orig = bpy.data.actions.get(state["action"]) if state["action"] else None
+    if orig is not None and ad is not None:
+        ad.action = orig
+        orig.use_fake_user = state["action_fake"]
+    if cur is not None and cur.get(WORK) and cur is not orig:
+        bpy.data.actions.remove(cur)
+    for name in state.get("colliders", []):
+        o = bpy.data.objects.get(name)
+        if o is not None:
+            bpy.data.objects.remove(o)
+    scene.gravity, scene.use_gravity = state["gravity"], state["use_gravity"]
+    del root[STATE]
+    if state["built"]:
+        scene.frame_set(scene.frame_start)
+        m.build()
+    free_cache(scene)
+    return True

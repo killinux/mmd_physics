@@ -1,11 +1,12 @@
 """Blender 里预览物理:Build(mmd_tools)+ 打开刚体世界 + 播放测试动作;停止时 Clean 并还原场景。
 
 让预览接近 MMD(停止时全部还原):
-- 尺度:模型在 Blender 里是 PMX 的 1/scale(常用 12.5)。MMD 的重力是 9.8 单位/秒²,旋转弹簧的量纲带
-  长度²,直接跑会重力强 scale 倍、旋转弹簧硬 scale² 倍 → 重力设成 9.8/scale、旋转弹簧乘 1/scale²;
-  质量、衰减、线性弹簧与尺度无关。
-- 弹簧:mmd_tools 建的约束六轴弹簧全开、阻尼 0.5,关节像泡在蜂蜜里(下坠要 4 秒、几乎不晃);
-  改成和 MMD 一样只在弹簧常数非 0 的轴开弹簧,阻尼取轻的 0.1(见 params.preview_joint)。
+- 关节和重力按 effects.mmd_like(和「效果选择」的「MMD 同款」一样):模型在 Blender 里是 PMX 的 1/scale
+  (常用 12.5);MMD 的重力是 98 单位/秒²(9.8 × 10,three.js MMDPhysics / saba / MMDAgent-EX 都这样),换成
+  98/scale 米/秒²;旋转弹簧的量纲带长度² → 乘 1/scale²;关节换成 SPRING1、去掉 mmd_tools 加的 0.5 关节阻尼
+  (MMD 的 PMX 关节没有阻尼),质量、衰减、线性弹簧与尺度无关。
+- 谁都不碰的刚体(PMX 里和所有组都不碰撞)单独一个碰撞层:mmd_tools 只给开始时挨着的刚体加了不碰撞约束,
+  不改的话手臂甩过来会把胸顶开。
 - 帧率 30fps(MMD 动作的帧率)。
 Blender 的刚体引擎和 MMD 的老版 Bullet 仍有差别,预览用来看幅度/方向/有没有炸,手感以 MMD 实测为准。
 导出前一定要停止预览:Build 着的模型导出,物理把骨头带离原位,PMX 一开场关节就被拉开。
@@ -19,7 +20,7 @@ from mathutils import Matrix, Quaternion, Vector
 
 TEST_ACTION = "mmd_physics_test"
 TEST_END = 160
-MMD_GRAVITY = 9.8                           # MMD 默认重力,单位/秒²
+MMD_GRAVITY = 98.0                          # MMD 的重力,单位/秒²(9.8 × 10)
 _CENTER = ("センター", "center", "全ての親")
 _UPPER = ("上半身", "上半身1", "upper body")
 
@@ -120,7 +121,8 @@ def _call_on(root, op, context):
 
 def start(context, root, motion):
     from mmd_tools.core.model import Model
-    from .params import joint_backup, preview_joint
+    from .effects import mmd_like
+    from .params import joint_backup
     st = root.mmd_physics
     if st.pv_active:
         stop(context, root)
@@ -140,6 +142,8 @@ def start(context, root, motion):
         "gravity": list(scene.gravity), "use_gravity": scene.use_gravity,
         "fps": [scene.render.fps, scene.render.fps_base],
         "joints": {j.name: joint_backup(j) for j in joints},
+        "cols": {o.name: [bool(x) for x in o.rigid_body.collision_collections]
+                 for o in model.rigidBodies() if o.rigid_body is not None},
     }
     if motion == 'TEST':
         names = [pb.name for pb in (_pick(arm, _CENTER), _pick(arm, _UPPER)) if pb is not None]
@@ -148,12 +152,8 @@ def start(context, root, motion):
         scene.frame_start, scene.frame_end = 1, TEST_END
     st.pv_state = json.dumps(state, ensure_ascii=False)
     _call_on(root, bpy.ops.mmd_tools.build_rig, context)
-    s = 1.0 / st.mmd_scale
-    scene.use_gravity = True
-    scene.gravity = (0.0, 0.0, -MMD_GRAVITY * s)
+    mmd_like(scene, model, st.mmd_scale)
     scene.render.fps, scene.render.fps_base = 30, 1.0         # MMD 的动作是 30fps
-    for j in joints:
-        preview_joint(j, s * s)
     world = scene.rigidbody_world
     world.enabled = True
     world.point_cache.frame_start = scene.frame_start
@@ -184,6 +184,10 @@ def stop(context, root):
     backups = state.get("joints", {})
     for j in model.joints():
         preview_joint(j, None, backups.get(j.name))
+    cols = state.get("cols", {})
+    for o in model.rigidBodies():
+        if o.rigid_body is not None and o.name in cols:
+            o.rigid_body.collision_collections = cols[o.name]
     if "gravity" in state:
         scene.gravity = state["gravity"]
         scene.use_gravity = state.get("use_gravity", True)

@@ -1,12 +1,15 @@
 """物理分组:从 mmd_tools 模型里找出某一类物理(胸部;后续衣服、头发)的刚体和关节,按左右分好。
 
 识别只看名字和结构,导入的 PMX 和 Convert_to_MMD5 转出来的 blend 都适用:
-- 胸部:绑在胸骨上(骨名像 左胸/右胸/breast/boob/bust/oppai/乳…)的刚体;或刚体名像胸的**物理**刚体
-  (跟骨的静态刚体多半是躯干碰撞体,光看刚体名不算);关节 = 一端连着这些刚体的关节。
+- 胸部:骨名或刚体名像胸(左胸/右胸/breast/boob/bust/oppai/乳…)的**物理**刚体(摆动的那个);
+  跟骨的刚体不算 —— 胸部锚点(左胸 / breast_physics_01 上的静态刚体)和躯干碰撞体,改了它们胸会塌。
+  关节 = 一端连着这些刚体的关节。物理类型按原来的算(效果面板会临时改成跟骨,原类型记在刚体上)。
 - 本插件写过的刚体会打标记(TAG),之后即使被改成「跟骨」也还认得(「关闭物理」预设能再开回来)。
 """
 
 import re
+
+from . import chains
 
 BREAST_RE = re.compile(r"boob|breast|bust|oppai|おっぱい|乳|mune|胸", re.I)
 # 名字带「胸」但其实是躯干的
@@ -72,9 +75,11 @@ def _breast_name(n):
 
 
 def _is_breast(o):
-    if o.get(TAG) == "breast" or _breast_name(o.mmd_rigid.bone):
+    if o.get(TAG) == "breast":
         return True
-    return int(o.mmd_rigid.type) != 0 and _breast_name(rigid_name(o))
+    if chains.body_type(o) not in ("1", "2"):
+        return False
+    return _breast_name(o.mmd_rigid.bone) or _breast_name(rigid_name(o))
 
 
 def find_breast(model):
