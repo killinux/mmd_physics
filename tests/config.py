@@ -29,5 +29,12 @@ MODELS = {
                      r"E:\Downloads\2026.6\2026gantz\Gantz Reika Suit 18\Gantz Reika Suit 18 V1.pmx"),
 }
 
+# 「按衣服推荐」的样本(Vindictus):卫衣 = 衣服只跟一部分,钢甲 = 胸骨不带网格
+OUTFIT = {
+    "hoodie": _env("MMDPHYS_PMX_HOODIE", r"E:\game_export\Vindictus\Fiona\pmx\PCF_008\PCF_008.pmx"),
+    "suit": _env("MMDPHYS_PMX_SUIT", r"E:\game_export\Vindictus\Fiona\pmx\PCF_009\PCF_009.pmx"),
+    "armor": _env("MMDPHYS_PMX_ARMOR", r"E:\game_export\Vindictus\Fiona\pmx\PCF_067\PCF_067.pmx"),
+}
+
 OUT = _env("MMDPHYS_OUT", r"E:\game_export\_mmd_physics\效果对比")      # 对比视频
 SHOTS = _env("MMDPHYS_SHOTS", r"E:\game_export\_mmd_physics\使用说明素材")  # 面板截图

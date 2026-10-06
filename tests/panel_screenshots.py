@@ -1,9 +1,11 @@
 """使用说明的面板截图:另开一个有界面的 Blender(不碰正在用的那个),导入模型和舞蹈,点「识别物理分组」、选方式、
 「模拟 / 烘焙」,把侧栏切到「MMD物理」标签后截图;再展开裙子的参数截一张。偏好设置不保存,结束直接退出。
 
-blender --factory-startup --enable-event-simulate --window-geometry 0 0 2560 1540 --python panel_screenshots.py -- [OUTDIR] [PMX]
+blender --factory-startup --enable-event-simulate --window-geometry 0 0 2560 1540 --python panel_screenshots.py -- [OUTDIR] [PMX] [MODE]
 
-输出:窗口整图 window.png、侧栏 面板_总览.png、面板_裙子参数.png、坐标 regions.json、日志 shot.log。
+MODE = effects(默认):窗口整图 window.png、侧栏 面板_总览.png、面板_裙子参数.png;
+MODE = kits:胸部选「MMD 刚体 · RGBA 式」并展开参数,侧栏 面板_胸部套件.png(整套换上的参数、按衣服推荐、物理步长)。
+另有坐标 regions.json、日志 shot.log。
 - Blender 3.6 没有 Region.active_panel_category:用模拟点击沿侧栏右边的标签栏往下点,直到本插件的面板被画出来。
   不用 Ctrl+Tab(鼠标在 3D 视图上会弹出模式饼菜单)。
 - 包 draw 的函数必须正好是 (self, context):Blender 按函数的参数个数建参数元组,多出来的默认参数是空指针,会崩。
@@ -22,6 +24,8 @@ from _blender import addon_utils, bpy, config  # noqa: E402
 _args = _blender.argv()
 OUT = _args[0] if _args else config.SHOTS
 PMX = _args[1] if len(_args) > 1 else config.MODELS["vindictus"]
+MODE = _args[2] if len(_args) > 2 else "effects"
+CONFIGS = {"effects": "BUST=SPRING:k1,HAIR=SPRING:vdf_hair,SKIRT=CLOTH:lively,CLOTH=FOLLOW", "kits": "BUST=RIGID:rgba"}
 LOG = os.path.join(OUT, "shot.log")
 os.makedirs(OUT, exist_ok=True)
 
@@ -78,7 +82,9 @@ def setup():
     scene, root, arm = _blender.load(PMX, config.VMD, morphs=True)
     bpy.ops.mmd_physics.fx_detect()
     fx = root.mmd_physics_fx
-    _blender.configure(fx, "BUST=SPRING:k1,HAIR=SPRING:vdf_hair,SKIRT=CLOTH:lively,CLOTH=FOLLOW")
+    _blender.configure(fx, CONFIGS[MODE])
+    if MODE == "kits":
+        fx.bust.show = True
     t = time.time()
     bpy.ops.mmd_physics.fx_apply()
     log("applied in %.0f s: %s" % (time.time() - t, fx.status[:200]))
@@ -164,6 +170,10 @@ def _tick():
         ev(win, 'MOUSEMOVE', 'NOTHING', 400, ui.y + ui.height // 2)     # 鼠标挪开,别让按钮高亮
         state["step"] = 3
         return 0.5
+    if s == 3 and MODE == "kits":
+        shot("面板_胸部套件", crop=True)
+        log("done")
+        os._exit(0)
     if s == 3:
         shot("window", crop=False)
         shot("面板_总览", crop=True)

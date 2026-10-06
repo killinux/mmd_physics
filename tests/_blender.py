@@ -69,5 +69,6 @@ def configure(fx, spec, base=("RIGID", "model")):
 
 
 def result(name, ok, detail=""):
-    """run_checks.py 收集以 PASS / FAIL 开头的行。"""
-    print("%s %s %s" % ("PASS" if ok else "FAIL", name, detail), flush=True)
+    """run_checks.py 收集以 PASS / FAIL 开头的行。先换行:Blender 自己的 C 输出(依赖循环提示等)按块刷新,
+    可能留半行在前面,结果行就不在行首、会被漏掉。"""
+    print("\n%s %s %s" % ("PASS" if ok else "FAIL", name, detail), flush=True)

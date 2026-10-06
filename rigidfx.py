@@ -1,7 +1,8 @@
 """「MMD 刚体」方式的预设怎么写进模型(效果烘焙每次先还原原值,所以都是在原值上改)。
 
-- 胸部 kind = "fixed":固定值(乳奶模板、柔软、Q弹……):摆动刚体的质量 / 阻尼,挂它的关节 ±限位、旋转弹簧,
-  平移锁死。
+- 胸部 kind = "fixed":固定值(乳奶模板、柔软、Q弹、PmxTailor……):摆动刚体的质量 / 阻尼,挂它的关节 ±限位
+  (扭转可以单给 twist_limit)、旋转弹簧,平移锁死。
+- 胸部 kind = "kit":整套换上(kits.py,effects.apply 里处理,不经过这里)。
 - 胸部 kind = "sag":按 MMD 重力(98 单位/秒²)和「静止时下垂几度」定旋转弹簧(ripper_tpose 仓库
   scripts/vindictus/bust_physics.py 的算法):弹簧 = 重力力矩 / 下垂角 + 重力刚度;力矩算上挂在胸上的所有摆动刚体
   (吊坠、衣片),它们的质量和弹簧可以先按 hanging_scale 减轻。上下 / 左右 / 扭转限位分开给,阻尼写在摆动刚体上。
@@ -160,16 +161,18 @@ def apply_bust(model, bust_bones, v, scale=12.5):
     lines = []
     if kind == "fixed":
         r = math.radians(v["rot"])
+        tw = v.get("twist_limit", v["rot"])
         for j, ball in pairs:
             rb = ball.rigid_body
             rb.mass = v["mass"]
             rb.linear_damping, rb.angular_damping = v["lin_damp"], v["ang_damp"]
             c = j.rigid_body_constraint
-            _set_ang_limits(c, r, r, r)
+            _set_ang_limits(c, r, math.radians(tw), r)
             _lock_lin(c)
             j.mmd_joint.spring_angular = (v["spring_rot"],) * 3
             j.mmd_joint.spring_linear = (0.0, 0.0, 0.0)
-            lines.append("%s: ±%g°, 弹簧 %g, 阻尼 %g/%g" % (j.name, v["rot"], v["spring_rot"], v["lin_damp"], v["ang_damp"]))
+            lines.append("%s: ±%g°(扭转 ±%g°), 弹簧 %g, 阻尼 %g/%g" % (j.name, v["rot"], tw, v["spring_rot"],
+                                                                   v["lin_damp"], v["ang_damp"]))
         return lines
     if kind != "sag":
         raise ValueError(kind)

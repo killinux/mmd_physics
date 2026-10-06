@@ -7,7 +7,7 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
                        StringProperty)
 from bpy.types import PropertyGroup
 
-from . import chains, effects, ops, presets
+from . import chains, effects, kits, ops, outfit, presets
 
 CATS = ("BUST", "HAIR", "SKIRT", "CLOTH")
 ATTR = {"BUST": "bust", "HAIR": "hair", "SKIRT": "skirt", "CLOTH": "cloth"}
@@ -15,7 +15,8 @@ CAT_OF = {v: k for k, v in ATTR.items()}
 
 # 面板属性名 ↔ 预设参数名。骨骼布料的参数名加 bc_ 前缀(damping / gravity / radius 和弹簧骨骼的重名)。
 RIGID_KEYS = ("kind", "mass", "lin_damp", "ang_damp", "rot", "spring_rot", "sag", "twist_sag", "pitch_limit",
-              "yaw_limit", "twist_limit", "hanging_scale", "damp_scale", "damp_min", "limit_scale")
+              "yaw_limit", "twist_limit", "hanging_scale", "damp_scale", "damp_min", "limit_scale", "kit", "kit_scale",
+              "kit_limit", "kit_lift", "kit_mass", "kit_pair")
 SPRING_KEYS = ("stiffness", "damping", "world_damping_location", "world_damping_rotation", "limit_angle", "radius_cm",
                "gravity_cm", "target_fps", "tip", "capsules", "colliders", "allow_legs", "carrier")
 CLOTH_KEYS = ("gravity", "damping", "radius", "restore_stiffness", "restore_attenuation", "limit_root", "limit_tip",
@@ -34,7 +35,9 @@ _CARRIERS = [
 ]
 _KINDS = [('model', "模型原样", "不改"), ('fixed', "固定值", "质量、阻尼、±限位、旋转弹簧直接给数"),
           ('sag', "按下垂角定弹簧", "按 MMD 重力 98 和静止下垂角算旋转弹簧"),
-          ('scale', "按比例", "阻尼、关节限位在原值上按比例改")]
+          ('scale', "按比例", "阻尼、关节限位在原值上按比例改"),
+          ('kit', "整套换上", "换成社区的多段刚体套件(RGBA 式、Tda 式、欧美转换式、AH 式):原来的胸部刚体改成跟骨,"
+                             "每条胸链另建一套刚体和关节;还原时删掉")]
 _ALLOW_LEGS = ("静止时(弹簧骨骼:第一帧)就陷在腿碰撞体里的布骨也放过。关(默认):推出去,骨骼贴着腿走的外套会张开"
                "一些,但腿不会穿出来;开:保持原来的形状,腿一动就会从布里穿出来。陷在胯里的部分总是放过")
 _items_cache = {}
@@ -111,6 +114,20 @@ class MMDPhysFxCategory(PropertyGroup):
     damp_scale: FloatProperty(name="阻尼 ×", min=0.0, max=3.0, default=1.0)
     damp_min: FloatProperty(name="阻尼至少", min=0.0, max=1.0, default=0.0)
     limit_scale: FloatProperty(name="旋转限位 ×", min=0.0, max=3.0, default=1.0)
+    kit: EnumProperty(name="套件", items=kits.items())
+    kit_scale: FloatProperty(name="大小 ×", min=0.2, max=3.0, default=1.0,
+                             description="套件按胸根到乳尖的距离自动缩放,再乘这个数")
+    kit_limit: FloatProperty(name="幅度 ×", min=0.0, max=3.0, default=1.0,
+                             description="主关节(锚 → 胸)的平移和旋转限位乘这个数(mmd_jiggle_bones 的「抖动强度」)")
+    kit_lift: FloatProperty(name="托高", min=0.0, max=1.0, default=1.0,
+                            description="平移上下限相等且不为 0 的关节(RGBA 把胸托高的两处)乘这个数。1 = 原版;"
+                                        "Blender 的关节硬,原版在这里会把胸抬高、上翘约 16°")
+    kit_mass: FloatProperty(name="质量 ×", min=0.1, max=20.0, default=1.0,
+                            description="套件刚体的质量都乘这个数,关节弹簧不变:越重晃得越大、越慢。AH 式想更晃时"
+                                        "社区的做法是 AH1 0.5 → 1.2、AH2 0.1 → 0.4(约 ×3)")
+    kit_pair: BoolProperty(name="左右连着(着衣用)", default=False,
+                           description="套件带左右之间的关节时(AH 式「着衣用」):左右两套锁在一起,两边一起晃,"
+                                       "原版穿衣服时用;关 = 左右各晃各的")
     # 弹簧骨骼
     stiffness: FloatProperty(name="刚度", min=0.0, max=1.0, default=0.05, precision=3,
                              description="每步往动画姿势拉回的比例,越大越硬、晃得越小")
@@ -186,7 +203,16 @@ class MMDPhysFx(PropertyGroup):
         default='MMD')
     gravity_scale: FloatProperty(name="重力倍数", min=0.0, soft_max=3.0, default=1.0,
                                  description="MMD 同款时的重力 = 98 单位/秒² × 这个数")
+    step: EnumProperty(
+        name="物理步长",
+        items=[('AUTO', "自动", "胸部用了要粗步长的套件(RGBA 式)就按 MMD 的 60 Hz,否则场景原样"),
+               ('SCENE', "场景原样", "不改刚体世界的「每帧子步数」(Blender 默认 10,30 fps 时 300 Hz)"),
+               ('60', "60 Hz(MMD)", "MMD 的物理最多每秒 60 步:关节「软」一些,RGBA 这类套件才晃"),
+               ('120', "120 Hz", "MikuMikuPhysics、MMD4Mecanim 的默认"),
+               ('300', "300 Hz", "Blender 默认(30 fps × 10)")],
+        default='AUTO')
     status: StringProperty(default="")
+    outfit: StringProperty(default="")      # 胸前穿的东西(outfit.py 的结论)
     inited: BoolProperty(default=False)
 
 
@@ -218,7 +244,7 @@ def plan_of(root):
     groups = [{"name": g.name, "category": g.category, "bones": json.loads(g.bones), "roots": json.loads(g.roots),
                "tip": g.tip, "enabled": g.enabled} for g in fx.groups]
     return {"categories": cats, "groups": groups, "physics": fx.physics, "gravity_scale": fx.gravity_scale,
-            "scale": root.mmd_physics.mmd_scale}
+            "scale": root.mmd_physics.mmd_scale, "step": fx.step}
 
 
 def fill_groups(fx, found):
@@ -240,8 +266,11 @@ class MMDPHYS_OT_fx_detect(ops._ModelOp, bpy.types.Operator):
         from mmd_tools.core.model import Model
         root = _root(context)
         fx = root.mmd_physics_fx
-        found = effects.detect_groups(Model(root).armature())
+        arm = Model(root).armature()
+        found = effects.detect_groups(arm)
         fill_groups(fx, found)
+        result, worst = outfit.analyse(arm)
+        fx.outfit = outfit.panel(result, worst) if result else ""
         if not fx.inited:
             init_categories(fx)
         counts = {}
@@ -251,6 +280,56 @@ class MMDPHYS_OT_fx_detect(ops._ModelOp, bpy.types.Operator):
             if counts else "没找到物理骨链(要用 mmd_tools 导入带物理的 PMX)"
         self.report({'INFO'}, fx.status)
         return {'FINISHED'}
+
+
+class MMDPHYS_OT_fx_outfit(ops._ModelOp, bpy.types.Operator):
+    """看胸前最外面那层网格跟不跟胸骨走,按结果给胸部选预设:衣服只跟一部分 → 收着晃(C 方案 / K1),
+    挡着一层不跟胸的 → 小幅晃(紧实 / 稳一点);贴身、裸着或胸骨不带网格 → 不改"""
+    bl_idname = "mmd_physics.fx_outfit"
+    bl_label = "按衣服推荐"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        from mmd_tools.core.model import Model
+        root = _root(context)
+        fx = root.mmd_physics_fx
+        result, worst = outfit.analyse(Model(root).armature())
+        fx.outfit = outfit.panel(result, worst) if result else "没找到胸链"
+        detail = outfit.summary(result, worst) if result else "没找到胸链"
+        props = fx.bust
+        key = outfit.RECOMMEND.get(worst, {}).get(props.method)
+        if key and key in [k for k, _l, _d in presets.fx_items("BUST", props.method)]:
+            props.preset = key
+            msg = "%s → 胸部预设改成「%s」| %s" % (outfit.LABELS[worst], dict(
+                (k, label) for k, label, _d in presets.fx_items("BUST", props.method))[key], detail)
+        else:
+            msg = "%s,%s:预设不改 | %s" % (outfit.LABELS.get(worst, worst), outfit.ADVICE.get(worst, ""), detail)
+        self.report({'INFO'}, msg)
+        return {'FINISHED'}
+
+
+def _selection(context):
+    """活动对象和选中的对象(名字)。mmd_tools 建物理时把活动对象换成它最后建的不碰撞约束(ncc.N),清物理时又把它
+    删掉:不放回去,用户选的东西就变了,还原后没有活动对象、面板的按钮全灰。"""
+    a = context.view_layer.objects.active
+    return (a.name if a else None, [o.name for o in context.selected_objects])
+
+
+def _reselect(context, sel, root):
+    """放回 _selection 记下的;原来的活动对象没了就用模型根。"""
+    vl = context.view_layer
+    active, selected = sel
+    for o in context.selected_objects:
+        o.select_set(False)
+    for n in selected:
+        o = vl.objects.get(n)
+        if o is not None:
+            o.select_set(True)
+    o = vl.objects.get(active) if active else None
+    try:
+        vl.objects.active = o if o is not None else root
+    except (RuntimeError, ReferenceError):
+        pass
 
 
 class MMDPHYS_OT_fx_apply(ops._ModelOp, bpy.types.Operator):
@@ -268,11 +347,14 @@ class MMDPHYS_OT_fx_apply(ops._ModelOp, bpy.types.Operator):
         if context.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
         lines = []
+        sel = _selection(context)
         try:
             effects.apply(context.scene, root, plan_of(root), log=lines.append)
         except Exception as e:                      # noqa: BLE001 - 报给用户看
             self.report({'ERROR'}, "失败:%s" % e)
             raise
+        finally:
+            _reselect(context, sel, root)
         fx.status = " | ".join(lines)
         self.report({'INFO'}, lines[-1] if lines else "完成")
         return {'FINISHED'}
@@ -288,7 +370,11 @@ class MMDPHYS_OT_fx_restore(ops._ModelOp, bpy.types.Operator):
         root = _root(context)
         if context.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
-        done = effects.restore(context.scene, root)
+        sel = _selection(context)
+        try:
+            done = effects.restore(context.scene, root)
+        finally:
+            _reselect(context, sel, root)
         root.mmd_physics_fx.status = "已还原" if done else "还没用过,不用还原"
         self.report({'INFO'}, root.mmd_physics_fx.status)
         return {'FINISHED'}
@@ -320,8 +406,15 @@ def _draw_params(layout, cat, props):
     if m == "RIGID":
         col.prop(props, "kind")
         if props.kind == "fixed":
-            for k in ("mass", "lin_damp", "ang_damp", "rot", "spring_rot"):
+            for k in ("mass", "lin_damp", "ang_damp", "rot", "twist_limit", "spring_rot"):
                 col.prop(props, k)
+        elif props.kind == "kit":
+            for k in ("kit", "kit_scale", "kit_limit", "kit_lift", "kit_mass"):
+                col.prop(props, k)
+            if kits.has_pairs(props.kit):
+                col.prop(props, "kit_pair")
+            if kits.step_hz(props.kit):
+                col.label(text="自动步长 = %d Hz" % kits.step_hz(props.kit), icon='INFO')
         elif props.kind == "sag":
             for k in ("sag", "twist_sag", "pitch_limit", "yaw_limit", "twist_limit", "lin_damp", "ang_damp",
                       "hanging_scale"):
@@ -425,6 +518,10 @@ class MMDPHYS_PT_fx(bpy.types.Panel):
             box.prop(props, "method")
             if props.method != "FOLLOW":
                 box.prop(props, "preset")
+            if cat == "BUST":
+                box.operator("mmd_physics.fx_outfit", icon='MATCLOTH')
+                for i, line in enumerate(fx.outfit.split(" | ") if fx.outfit else []):
+                    box.label(text=line, icon='INFO' if i == 0 else 'BLANK1')
             box.prop(props, "show", icon='TRIA_DOWN' if props.show else 'TRIA_RIGHT', emboss=False)
             if props.show:
                 _draw_params(box, cat, props)
@@ -432,6 +529,7 @@ class MMDPHYS_PT_fx(bpy.types.Panel):
         col.prop(fx, "physics")
         if fx.physics == 'MMD':
             col.prop(fx, "gravity_scale")
+        col.prop(fx, "step")
         layout.label(text="范围:场景帧 %d–%d" % (context.scene.frame_start, context.scene.frame_end))
         row = layout.row(align=True)
         row.scale_y = 1.3
@@ -445,7 +543,7 @@ class MMDPHYS_PT_fx(bpy.types.Panel):
         layout.template_list("MMDPHYS_UL_fx_groups", "", fx, "groups", fx, "index", rows=4)
 
 
-_CLASSES = (MMDPhysFxCategory, MMDPhysFxGroup, MMDPhysFx, MMDPHYS_OT_fx_detect, MMDPHYS_OT_fx_apply,
+_CLASSES = (MMDPhysFxCategory, MMDPhysFxGroup, MMDPhysFx, MMDPHYS_OT_fx_detect, MMDPHYS_OT_fx_outfit, MMDPHYS_OT_fx_apply,
             MMDPHYS_OT_fx_restore, MMDPHYS_OT_fx_bake_cache, MMDPHYS_UL_fx_groups, MMDPHYS_PT_fx)
 
 

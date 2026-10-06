@@ -4,18 +4,21 @@ apply(scene, root, plan):
 1. 第一次:记下原值 —— 刚体(类型、质量、阻尼、摩擦、反弹、碰撞层)、关节(限位、弹簧、Blender 的弹簧设置)、
    场景重力、原动作(加假用户留着)、原来是否已「建立」物理。
 2. 每次都从原值开始:清除物理 → 刚体 / 关节写回原值 → 动作换成原动作的新副本(上次的副本删掉)。
-3. 选「MMD 刚体」的类:按预设改刚体 / 关节(rigidfx.py)。
+3. 选「MMD 刚体」的类:按预设改刚体 / 关节(rigidfx.py);胸部「整套换上」时原来的胸部摆动刚体改成跟骨,
+   每条胸链另建一套(kits.py)。
 4. 选其他方式的类:它们的摆动刚体改成跟骨(原类型记在刚体上,chains.ORIG_TYPE)。
 5. 建立物理(mmd_tools),关掉刚体世界,按依赖顺序烘弹簧骨骼(kawaii.py)和骨骼布料(bonecloth.py)的链:
    挂在别的链上的链后烘,读到的是前面烘好的姿势。
 6. 物理计算「MMD 同款」:关节换成 MMD 的弹簧(SPRING1、没有关节阻尼、旋转弹簧按缩放换算)、重力 98 单位/秒²、
-   每个谁都不碰的刚体单独一个碰撞层(否则手会穿进胸里把胸顶开);「mmd_tools 原样」不换算。打开刚体世界,清缓存。
-restore(scene, root):清除物理 → 原值 → 原动作 → 原重力 → 删掉本插件加的碰撞体 → 原来建立着就再建立。
+   每个谁都不碰的刚体单独一个碰撞层(否则手会穿进胸里把胸顶开);「mmd_tools 原样」不换算。套件的刚体谁都不碰。
+   物理步长:自动 = 用了要粗步长的套件(RGBA:MMD 的 60 Hz)就按它,否则场景原样;也可以直接给每秒步数。
+   打开刚体世界,清缓存。
+restore(scene, root):清除物理 → 原值 → 删掉套件 → 原动作 → 原重力、原步长 → 删掉本插件加的碰撞体 → 原来建立着就再建立。
 
 plan(effects_ui 从面板拼出来,脚本也可以自己拼):
   {"categories": {"BUST": {"method": "SPRING", "values": {...}}, ...},
    "groups": [{"name", "category", "bones": [...], "roots": [...], "tip": bool, "enabled": bool}, ...],
-   "physics": "MMD" | "MMDTOOLS", "gravity_scale": 1.0, "scale": 12.5}
+   "physics": "MMD" | "MMDTOOLS", "gravity_scale": 1.0, "scale": 12.5, "step": "AUTO" | "SCENE" | 每秒步数}
 """
 
 import json
@@ -24,11 +27,12 @@ import time
 import bpy
 import numpy as np
 
-from . import bonecloth, chains, kawaii, rigidfx
+from . import bonecloth, chains, kawaii, kits, rigidfx
 
 STATE = "mmd_physics_fx_state"             # 根对象上:原值(JSON)
 WORK = "mmd_physics_fx_work"               # 动作上:本插件建的工作副本
 MMD_GRAVITY = 98.0                         # MMD 的重力,单位/秒²
+HOLD_FRAMES = 1                            # 动作副本开头保持第一帧姿势的帧数(刚体关节在第二帧建,_hold_start);0 = 不保持
 AXES6 = ("x", "y", "z", "ang_x", "ang_y", "ang_z")
 LIMITS = tuple("limit_%s_%s_%s" % (k, a, e) for k in ("lin", "ang") for a in "xyz" for e in ("lower", "upper"))
 
@@ -112,14 +116,17 @@ def ensure_backup(scene, root):
     m = _model(root)
     arm = m.armature()
     action = arm.animation_data.action if arm.animation_data else None
+    world = scene.rigidbody_world
     state = {
-        "bodies": {o.name: _body_rec(o) for o in m.rigidBodies()},
+        "bodies": {o.name: _body_rec(o) for o in m.rigidBodies() if not o.get(kits.TAG)},
         "joints": {j.name: _joint_rec(j) for j in m.joints() if j.rigid_body_constraint is not None},
         "gravity": list(scene.gravity), "use_gravity": scene.use_gravity,
         "built": bool(root.mmd_root.is_built),
         "action": action.name if action is not None else "",
         "action_fake": bool(action.use_fake_user) if action is not None else False,
         "colliders": [],
+        "substeps": world.substeps_per_frame if world is not None else 0,
+        "iterations": world.solver_iterations if world is not None else 0,
     }
     _save(root, state)
     return state
@@ -156,6 +163,23 @@ def _fresh_action(arm, state):
     work.use_fake_user = False
     ad.action = work
     return work
+
+
+def _hold_start(action, start, frames):
+    """动作副本开头 frames 帧保持第一帧的姿势。Blender 在模拟的第二帧(start + 1)才按各刚体当时的位置建关节:
+    跟骨的刚体已经摆到第二帧的姿势,摆动刚体和关节还在第一帧的位置,这一帧的错位就永久留在关节里(胸、头发、
+    裙子整段偏几度);而且同一个 Blender 里第一次模拟和以后的模拟错位不一样(新开的 Blender 和播过一遍的结果
+    不同)。第二帧和第一帧姿势一样就没有错位,结果也不再看之前播没播过。返回改了几条曲线。"""
+    n = 0
+    for fc in action.fcurves:
+        v0 = fc.evaluate(start)
+        need = [start + k for k in range(1, frames + 1) if abs(fc.evaluate(start + k) - v0) > 1e-7]
+        for f in need:
+            fc.keyframe_points.insert(f, v0, options={"FAST"})
+        if need:
+            fc.update()
+            n += 1
+    return n
 
 
 # -- 链的单位和顺序 -----------------------------------------------------------------------------------------
@@ -301,6 +325,50 @@ def _sample(scene, arm, units, frames, colliders):
     return out
 
 
+def _apply_kit(m, arm, groups, v, plan):
+    """胸部「整套换上」:每条胸链的原摆动刚体改成跟骨(记原类型),另建一套 kits.py 的刚体和关节。返回说明。"""
+    lines = []
+    side_bones = {}
+    for g in groups:
+        side_bones.setdefault(chains.side_of(arm, g["roots"][0]), set()).update(g["bones"])
+    apexes = kits.side_apexes(arm, side_bones)
+    key = v.get("kit", "rgba")
+    built = {}
+    for g in groups:
+        root = g["roots"][0]
+        chain = chains.BustChain(chains.side_of(arm, root), root, list(g["bones"]), bool(g.get("tip")))
+        bones = set(chain.bones)
+        for o in m.rigidBodies():
+            if o.mmd_rigid.bone in bones and chains.body_type(o) in ("1", "2") and not o.get(kits.TAG):
+                if chains.ORIG_TYPE not in o:
+                    o[chains.ORIG_TYPE] = o.mmd_rigid.type
+                o.mmd_rigid.type = "0"
+        r = kits.build(m, arm, chain, key, scale=v.get("kit_scale", 1.0),
+                       limit_scale=v.get("kit_limit", 1.0), lift=v.get("kit_lift", 1.0),
+                       mass_scale=v.get("kit_mass", 1.0),
+                       pmx_scale=plan.get("scale", 12.5), side_bones=side_bones[chain.side],
+                       apex=apexes.get(chain.side))
+        built.setdefault(chain.side, []).append(r)
+        lines.append("%s %s(驱动 %s,大小 ×%.2f)" % (kits.KITS[key]["label"], g["name"], r["main"], r["rel"]))
+    if v.get("kit_pair") and kits.has_pairs(key):          # 左右连着(AH 式「着衣用」):同序号的左右两条链
+        n = sum(kits.link_sides(m, key, a, b) for a, b in zip(built.get("L", []), built.get("R", [])))
+        lines.append("左右连着(%d 个关节)" % n)
+    return lines
+
+
+def step_hz(plan):
+    """这次的物理步长(每秒步数),0 = 场景原样。"""
+    step = plan.get("step", "AUTO")
+    if step == "SCENE":
+        return 0
+    if step != "AUTO":
+        return int(step)
+    c = plan["categories"].get("BUST")
+    if c is not None and c["method"] == "RIGID" and c["values"].get("kind") == "kit":
+        return kits.step_hz(c["values"].get("kit", ""))
+    return 0
+
+
 def _hide_meshes(root):
     """烘焙时先把模型的网格藏起来(逐帧求值快很多)。腿和胯的碰撞体也是网格,但不能藏:hide_viewport 的物体
     不参与求值,胶囊会一直停在第一帧,不跟腿走,裙子撞上留在原地的胶囊就被顶起来卡住。"""
@@ -319,6 +387,8 @@ def own_layers(m):
     刚体之间加了不碰撞约束,手臂甩过来照样会撞上胸。"""
     layer = 19
     for o in m.rigidBodies():
+        if o.get(kits.TAG):
+            continue                                # 套件的刚体谁都不碰(kits.no_collisions)
         if o.rigid_body is not None and all(o.mmd_rigid.collision_group_mask) and layer > 0:
             o.rigid_body.collision_collections = [i == layer for i in range(20)]
             layer -= 1
@@ -379,6 +449,7 @@ def apply(scene, root, plan, log=print):
     state = ensure_backup(scene, root)
     if root.mmd_root.is_built:
         m.clean()
+    kits.remove(m)
     _restore_values(m, state)
     work = _fresh_action(arm, state)
     cats = plan["categories"]
@@ -393,7 +464,9 @@ def apply(scene, root, plan, log=print):
         if c is None or c["method"] != "RIGID":
             continue
         bones = [n for g in gs for n in g["bones"]]
-        if cat == "BUST":
+        if cat == "BUST" and c["values"].get("kind") == "kit":
+            report.append("胸部整套换上:" + ";".join(_apply_kit(m, arm, gs, c["values"], plan)))
+        elif cat == "BUST":
             lines = rigidfx.apply_bust(m, bones, c["values"], plan.get("scale", 12.5))
             report.append("胸部 MMD 刚体:%s" % ("模型原样" if not lines else ";".join(lines)))
         else:
@@ -412,6 +485,11 @@ def apply(scene, root, plan, log=print):
                 o[chains.ORIG_TYPE] = o.mmd_rigid.type
             o.mmd_rigid.type = "0"
             changed += 1
+    # 还有摆动刚体就让动作开头保持一帧(_hold_start):弹簧骨骼、骨骼布料随后也按这份动作算
+    if work is not None and HOLD_FRAMES and any(chains.body_type(o) in ("1", "2") for o in m.rigidBodies()):
+        n = _hold_start(work, scene.frame_start, HOLD_FRAMES)
+        if n:
+            report.append("动作开头保持 %d 帧(%d 条曲线):刚体关节在第二帧建,那时姿势不动才不留错位" % (HOLD_FRAMES, n))
     # 碰撞体(腿、胯),要的单位才建
     units = _units(arm, groups, cats)
     colliders = bonecloth.collider_objects(arm)
@@ -422,6 +500,7 @@ def apply(scene, root, plan, log=print):
     scene.frame_set(scene.frame_start)
     t = time.time()
     m.build()
+    kits.no_collisions(m)
     report.append("建立物理 %.1f 秒" % (time.time() - t))
     world = scene.rigidbody_world
     world_on = world.enabled if world is not None else False
@@ -471,6 +550,13 @@ def apply(scene, root, plan, log=print):
         scene.gravity, scene.use_gravity = state["gravity"], state["use_gravity"]
     world = scene.rigidbody_world
     if world is not None:
+        hz = step_hz(plan)
+        if hz:
+            world.substeps_per_frame = max(1, int(round(hz / fps)))
+            report.append("物理步长 %d Hz(每帧 %d 步)" % (round(fps * world.substeps_per_frame),
+                                                        world.substeps_per_frame))
+        elif state.get("substeps"):
+            world.substeps_per_frame = state["substeps"]
         world.enabled = True
     free_cache(scene)
     scene.frame_set(scene.frame_start)
@@ -492,6 +578,7 @@ def restore(scene, root):
     if root.mmd_root.is_built:
         m.clean()
     _restore_values(m, state)
+    kits.remove(m)
     ad = arm.animation_data
     cur = ad.action if ad else None
     orig = bpy.data.actions.get(state["action"]) if state["action"] else None
@@ -505,6 +592,9 @@ def restore(scene, root):
         if o is not None:
             bpy.data.objects.remove(o)
     scene.gravity, scene.use_gravity = state["gravity"], state["use_gravity"]
+    world = scene.rigidbody_world
+    if world is not None and state.get("substeps"):
+        world.substeps_per_frame, world.solver_iterations = state["substeps"], state["iterations"]
     del root[STATE]
     if state["built"]:
         scene.frame_set(scene.frame_start)

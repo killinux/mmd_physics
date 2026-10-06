@@ -1,6 +1,6 @@
 """一次跑完插件的检查(每个检查一个后台 Blender,一次一个),收集 PASS / FAIL。有失败时返回 1。
 
-    python run_checks.py [detect] [kawaii] [effects] [skirt]      (不写 = 全部,约 10 分钟)
+    python run_checks.py [detect] [kawaii] [effects] [skirt] [kits] [outfit]      (不写 = 全部,约 25 分钟)
 
 模型、动作、Blender 的路径见 config.py;每个检查的完整输出在系统临时目录的 mmd_physics_checks 下。
 """
@@ -26,6 +26,8 @@ CHECKS = {
                               "BUST=SPRING:k1,HAIR=SPRING:vdf_hair,SKIRT=CLOTH:skirt,CLOTH=FOLLOW",
                               "BUST=CLOTH:roe_touch,HAIR=CLOTH:hair,SKIRT=CLOTH:lively,CLOTH=CLOTH:cloth"]),
         ("check_effects.py", [M["template"], "60", "BUST=SPRING:k1,SKIRT=SPRING:vdf_skirt,CLOTH=FOLLOW"]),
+        # 整套换上(套件的刚体 / 关节要删干净)、PmxTailor(固定值 + 单给的扭转限位)
+        ("check_effects.py", [M["roe"], "60", "BUST=RIGID:rgba", "BUST=RIGID:pmxtailor_l", "BUST=RIGID:western"]),
     ],
     # 裙子左右对称、不卡住、腿不穿出来(整段手势舞);乳奶模板模型的外套会撑开 30 多度,上限放宽
     "skirt": [
@@ -33,6 +35,16 @@ CHECKS = {
         ("check_skirt.py", [M["vindictus"], "300", "SKIRT=CLOTH:lively", "45", "5", "1"]),
         ("check_skirt.py", [M["vindictus"], "300", "SKIRT=SPRING:vdf_skirt", "45", "5", "1"]),
         ("check_skirt.py", [M["template"], "300", "SKIRT=CLOTH:skirt", "50", "5", "1"]),
+    ],
+    # 按衣服推荐:判出来的种类和预期一样,点按钮后预设换成推荐的
+    "outfit": [("check_outfit.py", [M["vindictus"] + "=loose", M["roe"] + "=free", M["template"] + "=free",
+                                    config.OUTFIT["hoodie"] + "=partial", config.OUTFIT["suit"] + "=free",
+                                    config.OUTFIT["armor"] + "=none"])],
+    # 胸部套件:每条胸链建一套、步长按套件、在动不炸,还原后不剩
+    "kits": [
+        ("check_kits.py", [M["roe"], "300"]),
+        ("check_kits.py", [M["template"], "300"]),
+        ("check_kits.py", [M["vindictus"], "300"]),
     ],
 }
 
