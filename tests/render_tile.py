@@ -1,12 +1,15 @@
 """对比视频的一格:PMX + VMD,按配置串用「效果选择」算好,渲成 mp4(或几帧 PNG)。demo_videos.py 一格调一次。
 
 blender -b --factory-startup --python render_tile.py -- --pmx P --out O.mp4 [--vmd V] [--wav W] [--frames N]
-        [--view chest[:yaw] | full[:yaw]] [--config "BUST=SPRING:k1,HAIR=CLOTH:hair"] [--still F ...] [--size S]
+        [--view chest[:yaw] | upper[:yaw] | full[:yaw]] [--config "BUST=SPRING:k1,HAIR=CLOTH:hair"] [--still F ...]
+        [--size S] [--strip REGEX]
 外观同 ripper_tpose 的 render_pmx_dance.py:灰色背景、两盏平行光、地面、Eevee 16 采样。
+--strip:导入后先删掉骨名匹配的刚体和连着它们的关节(当作转换来的模型没有这部分物理,同 check_still.py)。
 """
 import argparse
 import math
 import os
+import re
 import sys
 import time
 
@@ -21,7 +24,9 @@ ap.add_argument("--vmd", default=config.VMD)
 ap.add_argument("--out", required=True)
 ap.add_argument("--wav", default="")
 ap.add_argument("--frames", type=int, default=0, help="舞蹈帧数(不含开头过渡),0 = 整段")
-ap.add_argument("--view", default="chest", help="chest = 胸部特写(跟着上半身),full = 全身;冒号后是绕 Z 转的角度")
+ap.add_argument("--view", default="chest", help="chest = 胸部特写(跟着上半身),upper = 头和上半身(跟着上半身,"
+                                                 "看头发),full = 全身;冒号后是绕 Z 转的角度")
+ap.add_argument("--strip", default="", help="先删掉骨名匹配这个正则的刚体和连着它们的关节")
 ap.add_argument("--config", default="", help="各类的方式和预设,见 _blender.configure")
 ap.add_argument("--still", type=int, nargs="*", default=[], help="只渲这些帧(PNG)")
 ap.add_argument("--size", type=int, default=0, help="宽度(胸部特写是正方形,全身 2:3)")
@@ -32,6 +37,14 @@ _blender.fresh()
 from mmd_physics import effects  # noqa: E402
 
 scene, root, arm = _blender.load(a.pmx, a.vmd, a.frames, morphs=True)
+if a.strip:
+    rx = re.compile(a.strip, re.I)
+    gone = {o for o in bpy.data.objects if getattr(o, "mmd_type", "") == "RIGID_BODY" and rx.search(o.mmd_rigid.bone)}
+    joints = [o for o in bpy.data.objects if getattr(o, "mmd_type", "") == "JOINT" and o.rigid_body_constraint
+              and (o.rigid_body_constraint.object1 in gone or o.rigid_body_constraint.object2 in gone)]
+    for o in list(gone) + joints:
+        bpy.data.objects.remove(o, do_unlink=True)
+    print("STRIP %d bodies, %d joints" % (len(gone), len(joints)))
 from mmd_tools.core.model import Model  # noqa: E402
 rig = Model(root)
 rig.morph_slider.create()
@@ -95,6 +108,17 @@ if view == "chest":
     target = (sum(heads, Vector()) / len(heads)) if heads else arm.matrix_world @ anchor.head
     target = target + Vector((0.0, -0.08, -0.02))
     offset = Matrix.Rotation(yaw, 3, "Z") @ Vector((0.0, -0.62, 0.06))
+    cam.matrix_world = Matrix.Translation(target + offset) @ (-offset).to_track_quat("-Z", "Y").to_matrix().to_4x4()
+    w = cam.matrix_world.copy()
+    cam.parent, cam.parent_type, cam.parent_bone = arm, "BONE", anchor.name
+    cam.matrix_world = w
+    size = (a.size or 720, a.size or 720)
+elif view == "upper":
+    anchor = bone("上半身2") or bone("上半身")
+    head = bone("頭")
+    top = arm.matrix_world @ (head.tail if head is not None else anchor.tail)
+    target = (top + arm.matrix_world @ anchor.head) / 2 + Vector((0.0, 0.0, -0.08))
+    offset = Matrix.Rotation(yaw, 3, "Z") @ Vector((0.0, -1.35, 0.10))
     cam.matrix_world = Matrix.Translation(target + offset) @ (-offset).to_track_quat("-Z", "Y").to_matrix().to_4x4()
     w = cam.matrix_world.copy()
     cam.parent, cam.parent_type, cam.parent_bone = arm, "BONE", anchor.name

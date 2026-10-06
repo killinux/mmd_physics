@@ -16,6 +16,7 @@
 | `MMDPHYS_PMX_ROE` | ROE Lynn `pc_j01_nk_bs_bustB.pmx` | 左胸 / 右胸 骨架(裸体) |
 | `MMDPHYS_PMX_TEMPLATE` | `Gantz Reika Suit 18 V1.pmx` | 乳奶模板(单根胸骨);外套的骨骼贴着腿走 |
 | `MMDPHYS_PMX_HOODIE` / `MMDPHYS_PMX_SUIT` / `MMDPHYS_PMX_ARMOR` | Vindictus `PCF_008.pmx`(卫衣)/ `PCF_009.pmx`(西装)/ `PCF_067.pmx`(钢甲) | 「按衣服推荐」的检查样本 |
+| `MMDPHYS_PMX_BUNNY` / `MMDPHYS_PMX_SUIT2` | 下载的 `Bunny.pmx`(Tifa 兔女郎,TFD 转换)/ `Suit V2.pmx`(Tifa 甘兹套装) | 「原来不动的链」的样本:头发没有刚体(15 组 / 13 组),MMD 骨名、跳得动 |
 | `MMDPHYS_OUT` | `E:\game_export\_mmd_physics\效果对比` | 对比视频 |
 | `MMDPHYS_SHOTS` | `E:\game_export\_mmd_physics\使用说明素材` | 面板截图 |
 | `MMDPHYS_FFMPEG` | `ffmpeg` | 拼视频 |
@@ -23,7 +24,7 @@
 ## 检查(改完插件跑一遍)
 
 ```
-python tests\run_checks.py                  全部,约 25 分钟
+python tests\run_checks.py                  全部,约 35 分钟
 python tests\run_checks.py detect kawaii    只跑其中几项
 ```
 
@@ -37,7 +38,8 @@ python tests\run_checks.py detect kawaii    只跑其中几项
 | effects | `check_effects.py` | 几种方式各算一遍,点「还原」后刚体、关节、动作、重力和原来逐项一样,不留碰撞体、工作动作;ROE 上再算整套换上(RGBA、欧美转换)和 PmxTailor | 0 处不同 |
 | kits | `check_kits.py` | 胸部整套换上的五个预设(RGBA、Tda、欧美转换、AH、AH 着衣用)经面板各算一遍:每条胸链建一套(刚体、关节数对,左右连着时加上左右之间的),物理步长按套件(RGBA 60 Hz,其余场景原样),主胸骨在动(常见摆幅 > 0.3°)、没炸(没有 NaN、不超过 60°),左右连着时两侧每帧偏转差 < 1°;还原后套件一个不剩、步长回到原来的 | 各套件的摆幅见插件 README「胸部多段套件」 |
 | outfit | `check_outfit.py` | 「按衣服推荐」判出来的种类和预期一样,点按钮后胸部预设换成推荐的 | PCF_005 大致跟着、PCF_008 只跟一部分、PCF_067 不带网格、ROE / 乳奶模板裸着或贴身 |
-| skirt | `check_skirt.py` | 整段手势舞:裙链左右平均差 < 5°、最大偏角 < 45°(乳奶模板 50°)、链根以下的骨陷进腿胶囊 < 1 cm | PCF_005 防穿腿 右 -0.3 / 左 -0.5°、最大 7.5°;飘一点 -2.1 / -3.2°、最大 25.1°;弹簧骨骼 9.1 / 9.0°、最大 28.1°;乳奶模板外套 31.1 / 31.0°(撑开)、最大 43.1°、陷入 0.11 cm |
+| still | `check_still.py` | 原来不动的链(没有刚体):识别出至少 N 组;「模型原样」照旧不动(< 0.5°);新建刚体 / 弹簧骨骼 / 骨骼布料都晃起来(链根 → 梢的方向和挂点骨一起转时差的中位 > 1°)、不炸开(最大 < 75°,裙子 < 60°);还原后新建的刚体、关节一个不剩,原有的个数不变。PCF_005 用 `skirt` 参数先删掉裙子的刚体,当作没物理的裙子 | Bunny 头发 15 组:新建刚体中位 14°、最大 56°,弹簧骨骼 5.9 / 24°,骨骼布料 6.9 / 38°;Suit V2 13 组 12.7 / 52°;PCF_005 没刚体的裙子 14 组 8.4 / 36° |
+| skirt | `check_skirt.py` | 整段手势舞:裙链左右平均差 < 5°、最大偏角 < 45°(乳奶模板 50°)、链根以下的骨陷进腿胶囊 < 1 cm | PCF_005 防穿腿 右 -0.3 / 左 -0.5°、最大 7.5°;飘一点 -2.1 / -3.1°、最大 25.0°(开头保持一帧以后;之前 -3.2 / 25.1°);弹簧骨骼 9.1 / 9.0°、最大 28.1°;乳奶模板外套 31.1 / 31.0°(撑开)、最大 43.1°、陷入 0.10 cm |
 
 10-05 全部 17 项通过,约 12 分钟。
 

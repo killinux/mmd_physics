@@ -127,6 +127,21 @@ _CHAIN_RIGID = [
     ("lively", "飘一点", "阻尼 ×0.6、关节旋转限位放宽到 130%:晃得大、停得慢",
      dict(kind="scale", damp_scale=0.6, damp_min=0.0, limit_scale=1.3)),
 ]
+# 原来不动的链(没有刚体 / 只有跟骨刚体)临时建的那套(chainbodies.py):每类一组数
+CHAIN_BUILD = {
+    "HAIR": dict(kind="build", mass=0.5, lin_damp=0.8, ang_damp=0.9, rot=30.0, twist_limit=5.0, sag=10.0),
+    "SKIRT": dict(kind="build", mass=1.0, lin_damp=0.8, ang_damp=0.9, rot=25.0, twist_limit=5.0, sag=8.0),
+    "CLOTH": dict(kind="build", mass=0.5, lin_damp=0.8, ang_damp=0.9, rot=30.0, twist_limit=8.0, sag=10.0),
+}
+
+
+def _chain_rigid(cat):
+    v = CHAIN_BUILD[cat]
+    return list(_CHAIN_RIGID) + [
+        ("build", "新建刚体(给原来不动的链)",
+         "没有刚体(转换来的模型)或只有跟骨刚体的链,临时建一套:每节一个胶囊,质量 %g、摆动 ±%g°、静止下垂约 %g°"
+         "(按重力定弹簧,平伸、朝上的也撑得住);有刚体的链照模型原样。新建的刚体不碰身体:裙子要防穿腿用骨骼布料。"
+         "还原时删掉" % (v["mass"], v["rot"], v["sag"]), dict(v))]
 
 FX = {
     ("BUST", "RIGID"): [
@@ -201,7 +216,7 @@ FX = {
          "同一场景平时的 Magica 参数:阻尼大、没有角度恢复。游戏里平时不显示(混合权重 0),这里显示出来",
          dict(_BC_ROE_REST)),
     ],
-    ("HAIR", "RIGID"): list(_CHAIN_RIGID),
+    ("HAIR", "RIGID"): _chain_rigid("HAIR"),
     ("HAIR", "SPRING"): [
         ("vdf_hair", "Vindictus 头发",
          "Fiona 头发的 KawaiiPhysics 节点:刚度 0.2、阻尼 0.35(游戏 0.2–0.5)、不限角、不加重力",
@@ -213,7 +228,7 @@ FX = {
         ("hair", "头发", "骨骼布料插件的头发预设:角度恢复 0.3、根 / 梢限角 15 / 50°", dict(_BC_HAIR)),
         ("roe_game", "ROE 大厅头发(游戏原值)", "ROE 大厅模型头发、饰物的 Magica 数值:很稳", dict(_BC_GAME)),
     ],
-    ("SKIRT", "RIGID"): list(_CHAIN_RIGID),
+    ("SKIRT", "RIGID"): _chain_rigid("SKIRT"),
     ("SKIRT", "SPRING"): [
         ("vdf_skirt", "Vindictus 裙摆",
          "PCF_005 裙摆的 KawaiiPhysics 节点:刚度 0.2、阻尼 0.3、不限角、半径 4 cm;带腿和胯的碰撞体",
@@ -229,7 +244,7 @@ FX = {
          dict(_BC_SKIRT, restore_stiffness=0.04, restore_attenuation=0.5, limit_root=45.0, limit_tip=80.0,
               inertia=0.6)),
     ],
-    ("CLOTH", "RIGID"): list(_CHAIN_RIGID),
+    ("CLOTH", "RIGID"): _chain_rigid("CLOTH"),
     ("CLOTH", "SPRING"): [
         ("vdf_cloth", "Vindictus 衣物", "PCF_008 卫衣衣片的 KawaiiPhysics 节点:刚度 0.2、阻尼 0.6、不限角",
          _k(stiffness=0.2, damping=0.6, limit_angle=0.0, radius_cm=2.0, tip=1.0)),

@@ -7,6 +7,7 @@
   scripts/vindictus/bust_physics.py 的算法):弹簧 = 重力力矩 / 下垂角 + 重力刚度;力矩算上挂在胸上的所有摆动刚体
   (吊坠、衣片),它们的质量和弹簧可以先按 hanging_scale 减轻。上下 / 左右 / 扭转限位分开给,阻尼写在摆动刚体上。
 - 头发 / 裙子 / 衣物 kind = "scale":阻尼 ×damp_scale、再不低于 damp_min;关节旋转限位 ×limit_scale。
+- 头发 / 裙子 / 衣物 kind = "build":有刚体的链不改;原来不动的链新建一套(chainbodies.py,effects.apply 里处理)。
 - kind = "model":不改。
 
 关节轴按 PMX(pitch = 左右轴,上下摆;yaw = 竖轴;twist = 前后轴),Blender 里是 x / z / y。
@@ -213,9 +214,10 @@ def apply_bust(model, bust_bones, v, scale=12.5):
 
 
 def apply_chains(model, bones, v):
-    """头发 / 裙子 / 衣物的「MMD 刚体」预设:按比例改这些骨上摆动刚体的阻尼和挂它们的关节的旋转限位。"""
+    """头发 / 裙子 / 衣物的「MMD 刚体」预设:按比例改这些骨上摆动刚体的阻尼和挂它们的关节的旋转限位。
+    kind = "build"(给原来不动的链新建刚体,chainbodies.py)对有刚体的链就是模型原样。"""
     kind = v.get("kind", "model")
-    if kind == "model":
+    if kind in ("model", "build"):
         return 0
     if kind != "scale":
         raise ValueError(kind)

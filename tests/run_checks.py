@@ -1,6 +1,6 @@
 """一次跑完插件的检查(每个检查一个后台 Blender,一次一个),收集 PASS / FAIL。有失败时返回 1。
 
-    python run_checks.py [detect] [kawaii] [effects] [skirt] [kits] [outfit]      (不写 = 全部,约 25 分钟)
+    python run_checks.py [detect] [kawaii] [effects] [skirt] [kits] [outfit] [still]      (不写 = 全部,约 35 分钟)
 
 模型、动作、Blender 的路径见 config.py;每个检查的完整输出在系统临时目录的 mmd_physics_checks 下。
 """
@@ -15,6 +15,7 @@ sys.path.insert(0, HERE)
 import config  # noqa: E402
 
 M = config.MODELS
+S = config.STILL
 CHECKS = {
     # 三种骨架的胸链左右都认到
     "detect": [("check_detect.py", [M["vindictus"], M["roe"], M["template"]])],
@@ -45,6 +46,17 @@ CHECKS = {
         ("check_kits.py", [M["roe"], "300"]),
         ("check_kits.py", [M["template"], "300"]),
         ("check_kits.py", [M["vindictus"], "300"]),
+    ],
+    # 原来不动的链(转换来的模型没有刚体):认得到;模型原样照旧不动;新建刚体 / 弹簧骨骼 / 骨骼布料都晃起来、
+    # 不炸开,还原后新建的刚体一个不剩。PCF_005 删掉裙子的刚体,当作没物理的裙子
+    "still": [
+        ("check_still.py", [S["bunny"], "150", "", "10", "0"]),
+        ("check_still.py", [S["bunny"], "150", "HAIR=RIGID:build", "10", "1", "75"]),
+        ("check_still.py", [S["bunny"], "150", "HAIR=SPRING:vdf_hair", "10", "1", "75"]),
+        ("check_still.py", [S["bunny"], "150", "HAIR=CLOTH:hair", "10", "1", "75"]),
+        ("check_still.py", [S["suit"], "150", "HAIR=RIGID:build", "10", "1", "75"]),
+        ("check_still.py", [M["vindictus"], "150", "SKIRT=RIGID:build", "14", "1", "60", "skirt"]),
+        ("check_still.py", [M["vindictus"], "150", "SKIRT=CLOTH:skirt", "14", "1", "60", "skirt"]),
     ],
 }
 

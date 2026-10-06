@@ -37,7 +37,9 @@ _KINDS = [('model', "模型原样", "不改"), ('fixed', "固定值", "质量、
           ('sag', "按下垂角定弹簧", "按 MMD 重力 98 和静止下垂角算旋转弹簧"),
           ('scale', "按比例", "阻尼、关节限位在原值上按比例改"),
           ('kit', "整套换上", "换成社区的多段刚体套件(RGBA 式、Tda 式、欧美转换式、AH 式):原来的胸部刚体改成跟骨,"
-                             "每条胸链另建一套刚体和关节;还原时删掉")]
+                             "每条胸链另建一套刚体和关节;还原时删掉"),
+          ('build', "新建刚体", "原来不动的链(没有刚体 / 只有跟骨刚体)临时建一套刚体和关节,按静止下垂角定弹簧;"
+                               "有刚体的链照模型原样;还原时删掉")]
 _ALLOW_LEGS = ("静止时(弹簧骨骼:第一帧)就陷在腿碰撞体里的布骨也放过。关(默认):推出去,骨骼贴着腿走的外套会张开"
                "一些,但腿不会穿出来;开:保持原来的形状,腿一动就会从布里穿出来。陷在胯里的部分总是放过")
 _items_cache = {}
@@ -186,6 +188,7 @@ class MMDPhysFxGroup(PropertyGroup):
     tip: BoolProperty()
     count: IntProperty()
     enabled: BoolProperty(name="参与", default=True)
+    still: StringProperty()                 # "" / "nobody"(没有刚体)/ "static"(只有跟骨刚体),chains.still_groups
 
 
 class MMDPhysFx(PropertyGroup):
@@ -242,7 +245,7 @@ def plan_of(root):
         props = getattr(fx, ATTR[cat])
         cats[cat] = {"method": props.method, "values": values_of(props)}
     groups = [{"name": g.name, "category": g.category, "bones": json.loads(g.bones), "roots": json.loads(g.roots),
-               "tip": g.tip, "enabled": g.enabled} for g in fx.groups]
+               "tip": g.tip, "enabled": g.enabled, "still": g.still} for g in fx.groups]
     return {"categories": cats, "groups": groups, "physics": fx.physics, "gravity_scale": fx.gravity_scale,
             "scale": root.mmd_physics.mmd_scale, "step": fx.step}
 
@@ -254,6 +257,23 @@ def fill_groups(fx, found):
         item.name, item.category = g["name"], g["category"]
         item.bones, item.roots = json.dumps(g["bones"], ensure_ascii=False), json.dumps(g["roots"], ensure_ascii=False)
         item.tip, item.count, item.enabled = g["tip"], len(g["bones"]), g.get("enabled", True)
+        item.still = g.get("still", "")
+
+
+STILL_LABEL = {"nobody": "无刚体", "static": "原来不动"}
+
+
+def still_defaults(fx):
+    """一类里参与的组全是原来不动的链、方式又是「MMD 刚体 · 模型原样」(什么都不会动)时,写法换成「新建刚体」。
+    返回换了的类。"""
+    changed = []
+    for cat in CATS:
+        gs = [g for g in fx.groups if g.enabled and g.category == cat]
+        props = getattr(fx, ATTR[cat])
+        if gs and all(g.still for g in gs) and props.method == "RIGID" and props.preset == "model":
+            props.preset = "build"              # _preset_changed 填参数
+            changed.append(cat)
+    return changed
 
 
 class MMDPHYS_OT_fx_detect(ops._ModelOp, bpy.types.Operator):
@@ -273,11 +293,18 @@ class MMDPHYS_OT_fx_detect(ops._ModelOp, bpy.types.Operator):
         fx.outfit = outfit.panel(result, worst) if result else ""
         if not fx.inited:
             init_categories(fx)
-        counts = {}
+        switched = still_defaults(fx)
+        counts, still = {}, {}
         for g in found:
             counts[g["category"]] = counts.get(g["category"], 0) + 1
-        fx.status = "识别到:" + ",".join("%s %d 组" % (chains.CATEGORY_LABEL[c], n) for c, n in counts.items()) \
-            if counts else "没找到物理骨链(要用 mmd_tools 导入带物理的 PMX)"
+            if g.get("still"):
+                still[g["category"]] = still.get(g["category"], 0) + 1
+        fx.status = "识别到:" + ",".join(
+            "%s %d 组%s" % (chains.CATEGORY_LABEL[c], n, "(%d 组原来不动)" % still[c] if c in still else "")
+            for c, n in counts.items()) if counts else "没找到会动的骨链(没有刚体、名字也不像头发 / 裙子 / 衣物)"
+        if switched:
+            fx.status += " | %s 全是原来不动的链:写法换成「新建刚体」" % "、".join(
+                chains.CATEGORY_LABEL[c] for c in switched)
         self.report({'INFO'}, fx.status)
         return {'FINISHED'}
 
@@ -396,7 +423,8 @@ class MMDPHYS_UL_fx_groups(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
         row.prop(item, "enabled", text="")
-        row.label(text="%s(%d 根)" % (item.name, item.count))
+        row.label(text="%s(%d 根%s)" % (item.name, item.count,
+                                        " · " + STILL_LABEL[item.still] if item.still in STILL_LABEL else ""))
         row.prop(item, "category", text="")
 
 
@@ -422,6 +450,11 @@ def _draw_params(layout, cat, props):
         elif props.kind == "scale":
             for k in ("damp_scale", "damp_min", "limit_scale"):
                 col.prop(props, k)
+        elif props.kind == "build":
+            col.label(text="原来不动的链新建刚体(每节一个,不碰身体):")
+            for k in ("mass", "lin_damp", "ang_damp", "rot", "twist_limit", "sag"):
+                col.prop(props, k)
+            col.label(text="有刚体的链照模型原样", icon='INFO')
         else:
             col.label(text="用 PMX 自带的数值")
     elif m == "SPRING":

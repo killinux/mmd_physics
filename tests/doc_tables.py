@@ -120,11 +120,20 @@ def appendix(kits, fx, breast):
             out.append("| %s | %s | %s | %s | %s | %s | %s |" % (
                 label, kits[v["kit"]]["label"], n(v["kit_scale"]), n(v["kit_limit"]), n(v["kit_lift"]),
                 n(v["kit_mass"]), "是" if v["kit_pair"] else "否"))
-    out += ["", "### B.2 头发 / 裙子 / 其他衣物 · MMD 刚体(按比例)", "",
+    out += ["", "### B.2 头发 / 裙子 / 其他衣物 · MMD 刚体", "",
+            "**按比例**(模型自带的刚体):", "",
             "| 预设 | 阻尼 × | 阻尼至少 | 关节旋转限位 × |", "|---|---|---|---|"]
     for _k, label, _d, v in fx[("HAIR", "RIGID")]:
         if v.get("kind") == "scale":
             out.append("| %s | %s | %s | %s |" % (label, n(v["damp_scale"]), n(v["damp_min"]), n(v["limit_scale"])))
+    out += ["", "**新建刚体**(给原来不动的链,5.1 节;质量是链根的,往梢减到一半;下垂角是整条链的):", "",
+            "| 类 | 质量 | 移動 / 回転減衰 | 摆动 ±° | 扭转 ±° | 静止下垂° |", "|---|---|---|---|---|---|"]
+    for cat in ("HAIR", "SKIRT", "CLOTH"):
+        for _k, label, _d, v in fx.get((cat, "RIGID"), []):
+            if v.get("kind") == "build":
+                out.append("| %s | %s | %s / %s | %s | %s | %s |" % (
+                    CAT[cat], n(v["mass"]), n(v["lin_damp"]), n(v["ang_damp"]), n(v["rot"]), n(v["twist_limit"]),
+                    n(v["sag"])))
     out += ["", "### B.3 弹簧骨骼(KawaiiPhysics)", "",
             "| 类 | 预设 | 刚度 | 阻尼 | 抵消整体移动 / 转动 | 限角° | 碰撞半径 cm | 重力 cm/s² | 末端补点 | 碰撞 | 角色本体 |",
             "|---|---|---|---|---|---|---|---|---|---|---|"]

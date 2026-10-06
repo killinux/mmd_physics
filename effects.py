@@ -5,7 +5,8 @@ apply(scene, root, plan):
    场景重力、原动作(加假用户留着)、原来是否已「建立」物理。
 2. 每次都从原值开始:清除物理 → 刚体 / 关节写回原值 → 动作换成原动作的新副本(上次的副本删掉)。
 3. 选「MMD 刚体」的类:按预设改刚体 / 关节(rigidfx.py);胸部「整套换上」时原来的胸部摆动刚体改成跟骨,
-   每条胸链另建一套(kits.py)。
+   每条胸链另建一套(kits.py);写法「新建刚体」时给原来不动的链(没有刚体 / 只有跟骨刚体)临时建一套
+   (chainbodies.py)。
 4. 选其他方式的类:它们的摆动刚体改成跟骨(原类型记在刚体上,chains.ORIG_TYPE)。
 5. 建立物理(mmd_tools),关掉刚体世界,按依赖顺序烘弹簧骨骼(kawaii.py)和骨骼布料(bonecloth.py)的链:
    挂在别的链上的链后烘,读到的是前面烘好的姿势。
@@ -13,11 +14,13 @@ apply(scene, root, plan):
    每个谁都不碰的刚体单独一个碰撞层(否则手会穿进胸里把胸顶开);「mmd_tools 原样」不换算。套件的刚体谁都不碰。
    物理步长:自动 = 用了要粗步长的套件(RGBA:MMD 的 60 Hz)就按它,否则场景原样;也可以直接给每秒步数。
    打开刚体世界,清缓存。
-restore(scene, root):清除物理 → 原值 → 删掉套件 → 原动作 → 原重力、原步长 → 删掉本插件加的碰撞体 → 原来建立着就再建立。
+restore(scene, root):清除物理 → 原值 → 删掉套件和新建的链刚体 → 原动作 → 原重力、原步长 → 删掉本插件加的碰撞体
+→ 原来建立着就再建立。
 
 plan(effects_ui 从面板拼出来,脚本也可以自己拼):
   {"categories": {"BUST": {"method": "SPRING", "values": {...}}, ...},
-   "groups": [{"name", "category", "bones": [...], "roots": [...], "tip": bool, "enabled": bool}, ...],
+   "groups": [{"name", "category", "bones": [...], "roots": [...], "tip": bool, "enabled": bool,
+               "still": "" | "nobody" | "static"}, ...],
    "physics": "MMD" | "MMDTOOLS", "gravity_scale": 1.0, "scale": 12.5, "step": "AUTO" | "SCENE" | 每秒步数}
 """
 
@@ -27,7 +30,7 @@ import time
 import bpy
 import numpy as np
 
-from . import bonecloth, chains, kawaii, kits, rigidfx
+from . import bonecloth, chainbodies, chains, kawaii, kits, rigidfx
 
 STATE = "mmd_physics_fx_state"             # 根对象上:原值(JSON)
 WORK = "mmd_physics_fx_work"               # 动作上:本插件建的工作副本
@@ -44,15 +47,23 @@ def _model(root):
 
 # -- 识别 -------------------------------------------------------------------------------------------------
 def detect_groups(arm):
-    """面板的分组列表:每条胸链一组,其余按 chains.cloth_groups。"""
+    """面板的分组列表:每条胸链一组,其余按 chains.cloth_groups,再加原来不动的链(chains.still_groups)。
+    不动的链默认参与的条件:这一类没有会晃的链(转换来的模型整个没物理);有会晃的,作者大概是故意让这几条
+    不动的,默认不参与,可以勾上。"""
     bust, cloth = chains.detect(arm)
     out = []
     for c in bust:
         out.append({"name": "%s(%s)" % (c.root, "左" if c.side == "L" else "右"), "category": "BUST",
-                    "bones": list(c.bones), "roots": [c.root], "tip": bool(c.tip), "enabled": True})
+                    "bones": list(c.bones), "roots": [c.root], "tip": bool(c.tip), "enabled": True, "still": ""})
     for g in cloth:
         out.append({"name": g.name, "category": g.category, "bones": list(g.bones),
-                    "roots": chains.chain_roots(arm, g.bones), "tip": False, "enabled": True})
+                    "roots": chains.chain_roots(arm, g.bones), "tip": False, "enabled": True, "still": ""})
+    taken = {n for c in bust for n in c.bones} | {n for g in cloth for n in g.bones}
+    moving = {g.category for g in cloth}
+    for g in chains.still_groups(arm, exclude=taken):
+        out.append({"name": g.name, "category": g.category, "bones": list(g.bones),
+                    "roots": chains.chain_roots(arm, g.bones), "tip": False, "enabled": g.category not in moving,
+                    "still": g.still})
     return out
 
 
@@ -118,8 +129,9 @@ def ensure_backup(scene, root):
     action = arm.animation_data.action if arm.animation_data else None
     world = scene.rigidbody_world
     state = {
-        "bodies": {o.name: _body_rec(o) for o in m.rigidBodies() if not o.get(kits.TAG)},
-        "joints": {j.name: _joint_rec(j) for j in m.joints() if j.rigid_body_constraint is not None},
+        "bodies": {o.name: _body_rec(o) for o in m.rigidBodies() if not chains.made_by_us(o)},
+        "joints": {j.name: _joint_rec(j) for j in m.joints()
+                   if j.rigid_body_constraint is not None and not chains.made_by_us(j)},
         "gravity": list(scene.gravity), "use_gravity": scene.use_gravity,
         "built": bool(root.mmd_root.is_built),
         "action": action.name if action is not None else "",
@@ -339,7 +351,7 @@ def _apply_kit(m, arm, groups, v, plan):
         chain = chains.BustChain(chains.side_of(arm, root), root, list(g["bones"]), bool(g.get("tip")))
         bones = set(chain.bones)
         for o in m.rigidBodies():
-            if o.mmd_rigid.bone in bones and chains.body_type(o) in ("1", "2") and not o.get(kits.TAG):
+            if o.mmd_rigid.bone in bones and chains.body_type(o) in ("1", "2") and not chains.made_by_us(o):
                 if chains.ORIG_TYPE not in o:
                     o[chains.ORIG_TYPE] = o.mmd_rigid.type
                 o.mmd_rigid.type = "0"
@@ -387,8 +399,8 @@ def own_layers(m):
     刚体之间加了不碰撞约束,手臂甩过来照样会撞上胸。"""
     layer = 19
     for o in m.rigidBodies():
-        if o.get(kits.TAG):
-            continue                                # 套件的刚体谁都不碰(kits.no_collisions)
+        if chains.made_by_us(o):
+            continue                                # 套件、新建的链刚体谁都不碰(kits / chainbodies.no_collisions)
         if o.rigid_body is not None and all(o.mmd_rigid.collision_group_mask) and layer > 0:
             o.rigid_body.collision_collections = [i == layer for i in range(20)]
             layer -= 1
@@ -450,6 +462,7 @@ def apply(scene, root, plan, log=print):
     if root.mmd_root.is_built:
         m.clean()
     kits.remove(m)
+    chainbodies.remove(m)
     _restore_values(m, state)
     work = _fresh_action(arm, state)
     cats = plan["categories"]
@@ -463,15 +476,22 @@ def apply(scene, root, plan, log=print):
         c = cats.get(cat)
         if c is None or c["method"] != "RIGID":
             continue
-        bones = [n for g in gs for n in g["bones"]]
+        still = [g for g in gs if g.get("still")]
+        bones = [n for g in gs if not g.get("still") for n in g["bones"]]
         if cat == "BUST" and c["values"].get("kind") == "kit":
             report.append("胸部整套换上:" + ";".join(_apply_kit(m, arm, gs, c["values"], plan)))
         elif cat == "BUST":
             lines = rigidfx.apply_bust(m, bones, c["values"], plan.get("scale", 12.5))
             report.append("胸部 MMD 刚体:%s" % ("模型原样" if not lines else ";".join(lines)))
         else:
-            n = rigidfx.apply_chains(m, bones, c["values"])
-            report.append("%s MMD 刚体:%s" % (chains.CATEGORY_LABEL[cat], "改了 %d 个刚体" % n if n else "模型原样"))
+            n = rigidfx.apply_chains(m, bones, c["values"]) if bones else 0
+            line = "%s MMD 刚体:%s" % (chains.CATEGORY_LABEL[cat], "改了 %d 个刚体" % n if n else "模型原样")
+            if still and c["values"].get("kind") == "build":
+                nb, nj = chainbodies.build(m, arm, [g["bones"] for g in still], c["values"], plan.get("scale", 12.5))
+                line += ";%d 组原来不动的链新建刚体 %d 个、关节 %d 个" % (len(still), nb, nj)
+            elif still:
+                line += ";%d 组原来不动的链照旧不动(写法选「新建刚体」才会晃)" % len(still)
+            report.append(line)
     # 4. 其他方式的类:摆动刚体改成跟骨
     follow = set()
     for cat, gs in by_cat.items():
@@ -501,6 +521,7 @@ def apply(scene, root, plan, log=print):
     t = time.time()
     m.build()
     kits.no_collisions(m)
+    chainbodies.no_collisions(m)
     report.append("建立物理 %.1f 秒" % (time.time() - t))
     world = scene.rigidbody_world
     world_on = world.enabled if world is not None else False
@@ -579,6 +600,7 @@ def restore(scene, root):
         m.clean()
     _restore_values(m, state)
     kits.remove(m)
+    chainbodies.remove(m)
     ad = arm.animation_data
     cur = ad.action if ad else None
     orig = bpy.data.actions.get(state["action"]) if state["action"] else None

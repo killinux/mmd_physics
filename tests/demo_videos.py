@@ -1,9 +1,11 @@
 """效果对比视频:每一格用 render_tile.py 在后台 Blender 里渲(一次一个),再用 ffmpeg 拼成带标签的网格,配舞蹈音乐。
 
-    python demo_videos.py [bust|body|roe|template|kits|kits_roe|kits_template ...]      (不写 = 全部)
+    python demo_videos.py [bust|body|roe|template|kits|kits_roe|kits_template|still_bunny|still_skirt ...]
+                                                                                       (不写 = 全部)
 
 输出在 config.OUT:<名字>.mp4,每一格在 _tiles/<名字>/NN.mp4(+ .log)。已经有的格子跳过:
 改了插件要重渲某一格,先把那一格的 mp4 挪走。模型、动作、Blender 的路径见 config.py。
+格子 = (标签, 配置串) 或 (标签, 配置串, 先删掉哪些骨上的刚体的正则)。
 """
 import os
 import subprocess
@@ -15,6 +17,7 @@ sys.path.insert(0, HERE)
 import config  # noqa: E402
 
 M = config.MODELS
+S = config.STILL
 DEMOS = {
     "bust": dict(name="胸部_6种_Vindictus_PCF_005", view="chest", size=480, cols=3, pmx=M["vindictus"], tiles=[
         ("MMD 刚体 · 模型原样(归档的 B)", ""),
@@ -77,6 +80,21 @@ DEMOS = {
         ("整套换上 · AH 式(质量 ×3)", "BUST=RIGID:ah"),
         ("AH 式 · 着衣用(左右连着 ×10)", "BUST=RIGID:ah_clothed"),
     ]),
+    # 原来不动的链(chains.still_groups):转换来的模型头发没有刚体;从斜后方看头发
+    "still_bunny": dict(name="头发_无刚体_4种_Tifa兔女郎", view="upper:150", size=480, cols=4, pmx=S["bunny"], tiles=[
+        ("模型原样(没有刚体 不动)", ""),
+        ("MMD 刚体 · 新建刚体", "HAIR=RIGID:build"),
+        ("弹簧骨骼 · Vindictus 头发", "HAIR=SPRING:vdf_hair"),
+        ("骨骼布料 · 头发", "HAIR=CLOTH:hair"),
+    ]),
+    # PCF_005 的裙子删掉刚体当作没物理的裙子,和原模型的裙子刚体比
+    "still_skirt": dict(name="裙子_无刚体_4种_Vindictus_PCF_005", view="full:25", size=480, cols=4, pmx=M["vindictus"],
+                        tiles=[
+        ("原模型的裙子刚体(对照)", ""),
+        ("删掉裙子刚体 · 模型原样(不动)", "", "skirt"),
+        ("删掉裙子刚体 · 新建刚体", "SKIRT=RIGID:build", "skirt"),
+        ("删掉裙子刚体 · 骨骼布料(防穿腿)", "SKIRT=CLOTH:skirt", "skirt"),
+    ]),
 }
 
 
@@ -84,7 +102,7 @@ def log(msg):
     print(time.strftime("%H:%M:%S"), msg, flush=True)
 
 
-def render(demo, k, label, spec):
+def render(demo, k, label, spec, strip=""):
     folder = os.path.join(config.OUT, "_tiles", demo["name"])
     os.makedirs(folder, exist_ok=True)
     out = os.path.join(folder, "%02d.mp4" % k)
@@ -92,7 +110,7 @@ def render(demo, k, label, spec):
         return out
     cmd = [config.BLENDER, "-b", "--factory-startup", "--python", os.path.join(HERE, "render_tile.py"), "--",
            "--pmx", demo["pmx"], "--vmd", config.VMD, "--wav", config.WAV, "--out", out, "--view", demo["view"],
-           "--config", spec, "--size", str(demo["size"])]
+           "--config", spec, "--size", str(demo["size"])] + (["--strip", strip] if strip else [])
     t = time.time()
     with open(out + ".log", "w", encoding="utf-8", errors="replace") as fh:
         code = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, timeout=3600).returncode
@@ -156,8 +174,8 @@ def main():
     os.makedirs(config.OUT, exist_ok=True)
     for key in which:
         demo = DEMOS[key]
-        done = [(label, path) for k, (label, spec) in enumerate(demo["tiles"], 1)
-                for path in [render(demo, k, label, spec)] if path]
+        done = [(tile[0], path) for k, tile in enumerate(demo["tiles"], 1)
+                for path in [render(demo, k, *tile)] if path]
         if done:
             grid(demo, done)
 
