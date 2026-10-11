@@ -1,6 +1,6 @@
 """一次跑完插件的检查(每个检查一个后台 Blender,一次一个),收集 PASS / FAIL。有失败时返回 1。
 
-    python run_checks.py [detect] [kawaii] [effects] [skirt] [kits] [outfit] [still]      (不写 = 全部,约 35 分钟)
+    python run_checks.py [detect] [kawaii] [effects] [skirt] [mesh] [kits] [outfit] [still]   (不写 = 全部,约 40 分钟)
 
 模型、动作、Blender 的路径见 config.py;每个检查的完整输出在系统临时目录的 mmd_physics_checks 下。
 """
@@ -36,6 +36,12 @@ CHECKS = {
         ("check_skirt.py", [M["vindictus"], "300", "SKIRT=CLOTH:lively", "45", "5", "1"]),
         ("check_skirt.py", [M["vindictus"], "300", "SKIRT=SPRING:vdf_skirt", "45", "5", "1"]),
         ("check_skirt.py", [M["template"], "300", "SKIRT=CLOTH:skirt", "50", "5", "1"]),
+    ],
+    # 骨骼布料的布面:腿动得大的舞(抬腿 55 cm、转一整圈)里,两条相邻链之间的布不陷进腿、横向不拉长太多(大腿把
+    # 布托起来的那几帧会拉长到 1.4 倍左右)。乳奶模板的裙骨贴腿,推出腿以后一直撑开 1.5 倍左右,上限放宽
+    "mesh": [
+        ("check_cloth_mesh.py", [M["vindictus"], "300", "SKIRT=CLOTH:skirt", config.VMD_LEGS, "0.5", "1.5"]),
+        ("check_cloth_mesh.py", [M["template"], "300", "SKIRT=CLOTH:skirt", config.VMD_LEGS, "1.5", "2"]),
     ],
     # 按衣服推荐:判出来的种类和预期一样,点按钮后预设换成推荐的
     "outfit": [("check_outfit.py", [M["vindictus"] + "=loose", M["roe"] + "=free", M["template"] + "=free",

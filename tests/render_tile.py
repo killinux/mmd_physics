@@ -1,7 +1,8 @@
 """对比视频的一格:PMX + VMD,按配置串用「效果选择」算好,渲成 mp4(或几帧 PNG)。demo_videos.py 一格调一次。
 
 blender -b --factory-startup --python render_tile.py -- --pmx P --out O.mp4 [--vmd V] [--wav W] [--frames N]
-        [--view chest[:yaw] | upper[:yaw] | full[:yaw]] [--config "BUST=SPRING:k1,HAIR=CLOTH:hair"] [--still F ...]
+        [--view chest[:yaw] | upper[:yaw] | hips[:yaw] | full[:yaw]] [--config "BUST=SPRING:k1,HAIR=CLOTH:hair"]
+        [--still F ...]
         [--size S] [--strip REGEX]
 外观同 ripper_tpose 的 render_pmx_dance.py:灰色背景、两盏平行光、地面、Eevee 16 采样。
 --strip:导入后先删掉骨名匹配的刚体和连着它们的关节(当作转换来的模型没有这部分物理,同 check_still.py)。
@@ -25,7 +26,8 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--wav", default="")
 ap.add_argument("--frames", type=int, default=0, help="舞蹈帧数(不含开头过渡),0 = 整段")
 ap.add_argument("--view", default="chest", help="chest = 胸部特写(跟着上半身),upper = 头和上半身(跟着上半身,"
-                                                 "看头发),full = 全身;冒号后是绕 Z 转的角度")
+                                                 "看头发),hips = 胸到脚(水平跟着下半身,看裙子和腿),full = 全身;"
+                                                 "冒号后是绕 Z 转的角度")
 ap.add_argument("--strip", default="", help="先删掉骨名匹配这个正则的刚体和连着它们的关节")
 ap.add_argument("--config", default="", help="各类的方式和预设,见 _blender.configure")
 ap.add_argument("--still", type=int, nargs="*", default=[], help="只渲这些帧(PNG)")
@@ -117,13 +119,27 @@ elif view == "upper":
     anchor = bone("上半身2") or bone("上半身")
     head = bone("頭")
     top = arm.matrix_world @ (head.tail if head is not None else anchor.tail)
-    target = (top + arm.matrix_world @ anchor.head) / 2 + Vector((0.0, 0.0, -0.08))
-    offset = Matrix.Rotation(yaw, 3, "Z") @ Vector((0.0, -1.35, 0.10))
+    target = (top + arm.matrix_world @ anchor.head) / 2 + Vector((0.0, 0.0, -0.12))
+    offset = Matrix.Rotation(yaw, 3, "Z") @ Vector((0.0, -1.5, 0.10))
     cam.matrix_world = Matrix.Translation(target + offset) @ (-offset).to_track_quat("-Z", "Y").to_matrix().to_4x4()
     w = cam.matrix_world.copy()
     cam.parent, cam.parent_type, cam.parent_bone = arm, "BONE", anchor.name
     cam.matrix_world = w
     size = (a.size or 720, a.size or 720)
+elif view == "hips":
+    # 裙子和腿:相机只水平跟着下半身走(不跟着转、不跟着蹲),离 2.2 米看胸到脚,转身时四面的裙子都看得到
+    hips = bone("下半身")
+    head = arm.matrix_world @ hips.head
+    pivot = bpy.data.objects.new("cam_pivot", None)
+    scene.collection.objects.link(pivot)
+    pivot.location = (head.x, head.y, 0.70)
+    follow = pivot.constraints.new("COPY_LOCATION")
+    follow.target, follow.subtarget, follow.use_z = arm, hips.name, False
+    offset = Matrix.Rotation(yaw, 3, "Z") @ Vector((0.0, -2.2, 0.05))
+    cam.parent = pivot
+    cam.location = offset
+    cam.rotation_euler = (-offset).to_track_quat("-Z", "Y").to_euler()
+    size = (a.size or 720, int((a.size or 720) * 1.5))
 else:
     target = Vector((0.0, 0.0, 0.95))
     offset = Matrix.Rotation(yaw, 3, "Z") @ Vector((0.0, -4.2, 0.0))

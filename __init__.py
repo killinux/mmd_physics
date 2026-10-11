@@ -2,7 +2,8 @@
 
 - 效果选择(渲染用,effects*.py):胸部 / 头发 / 裙子 / 其他衣物各选一种方式 —— MMD 刚体(多套预设,胸部还能
   整套换上 RGBA 式 / Tda 式 / 欧美转换式 / AH 式的多段刚体,kits.py;原来不动的链可以新建刚体,chainbodies.py)、
-  弹簧骨骼(KawaiiPhysics 同款,kawaii.py)、骨骼布料(Magica Cloth 2 风格,bonecloth.py)、跟随骨骼 ——
+  弹簧骨骼(KawaiiPhysics 同款,kawaii.py)、骨骼布料(Magica Cloth 2 风格,bonecloth.py;裙子开布面,相邻链横向
+  连成网、也挡腿)、跟随骨骼 ——
   一键模拟 / 烘焙,一键还原。转换来的模型没有刚体的头发、裙子链也认(chains.still_groups)。
 - 胸部刚体调参、新建胸部物理、预览、导出 PMX(groups / params / preview / create_breast / ops / ui)。
 需要 mmd_tools。
@@ -11,12 +12,12 @@
 bl_info = {
     "name": "MMD Physics 物理调节",
     "author": "killinux",
-    "version": (0, 5, 0),
+    "version": (0, 6, 0),
     "blender": (3, 6, 0),
     "location": "3D 视图 > 侧栏(N) > MMD物理",
     "description": "胸部、头发、裙子、衣物的物理效果任选(MMD 刚体多套预设,胸部可整套换上 RGBA / Tda / 欧美转换 / AH 式,"
-                   "没有刚体的链可新建;弹簧骨骼 Vindictus 同款 / 骨骼布料 Magica 风格 / 跟随骨骼),一键烘焙给渲视频用;"
-                   "胸部刚体调参、新建、预览、导出 PMX。需要 mmd_tools",
+                   "没有刚体的链可新建;弹簧骨骼 Vindictus 同款 / 骨骼布料 Magica 风格,裙子带布面 / 跟随骨骼),"
+                   "一键烘焙给渲视频用;胸部刚体调参、新建、预览、导出 PMX。需要 mmd_tools",
     "category": "Object",
 }
 

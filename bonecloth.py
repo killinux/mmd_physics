@@ -10,7 +10,9 @@ Magica Cloth 2 防穿模靠的几样东西（https://magicasoft.jp/en/mc2_magica
   - 背挡（Backstop）：每个点在动画位置沿外法线反方向的背后有一个大球，点进不去，所以布不会往身体里陷；
   - 最大距离（Max Distance）：点离动画位置不超过设定距离；
   - 碰撞体（Collider Collision）：身体上的胶囊 / 球，布的点当小球（点模式），或骨段当胶囊（边模式，不会从缝里钻过去）；
-  - 惯性限速（Inertia）：身体自己的移动只按比例、而且只在限速以内传给布，技能动作再快也不会把裙子甩穿腿。
+  - 惯性限速（Inertia）：身体自己的移动只按比例、而且只在限速以内传给布，技能动作再快也不会把裙子甩穿腿；
+  - 布面（BoneCloth 的 Mesh 连接，mmd_physics 加的）：相邻两条链同一层的骨尾连横边，边长限在范围里，横边也当胶囊
+    碰碰撞体，腿不会从两条链中间顶出来。
 
 和 Magica 一样，一组骨链的根挂在不参与模拟的父骨上（例如裙子挂在下半身），根骨的头跟着动画走，
 其余每根骨的尾端是一个质点。骨长是刚性的：每次修正后尾端都投回到"头 + 方向 × 骨长"。
@@ -54,6 +56,17 @@ DEFAULTS = {
     "link_stretch": 0.2,
     "link_squash": 0.5,
     "link_max": 0.2,                 # 只连第一帧时离得比这近的（m）
+    # 布面（mmd_physics 加的，Magica 的 Mesh 连接那样）：各链按绕身体轴的角度排一圈，相邻两条链同一层的骨尾连横边，
+    # 边长只许在静止长度的 (1 - mesh_squash) ~ (1 + mesh_stretch) 倍之间变；横边也当胶囊和碰撞体碰，腿不会从两条链
+    # 中间顶出来。开了布面就不用相邻链连接（link）
+    "mesh": False,
+    "mesh_stretch": 0.1,
+    "mesh_squash": 0.5,
+    "mesh_collide": True,            # 横边碰撞
+    # 横边当胶囊的半径（m），比质点半径大：腿的胶囊比真的腿细（大腿根前面的肉多出 3～5 cm），布离胶囊 2 cm 还是会
+    # 被肉顶穿。横边静止时就陷着的放过，加大它不改静止形状，只让腿往两条链中间顶时早一点把布托起来
+    "mesh_radius": 0.05,
+    "mesh_max": 0.25,                # 只连第一帧时链根骨尾离得比这近的两条链（m）
     # 静止时就陷在会动的碰撞体（腿）里的布骨：关 = 推出去（骨贴着腿走的外套会张开一些，腿不会穿出来）；
     # 开 = 和陷在胯里的一样放过（保持静止时的形状，腿一动就会穿出来）
     "allow_legs": False,
@@ -83,6 +96,94 @@ def link_pairs(cs, tails, max_dist):
             ib = np.array([lv[b] for _a, b in sorted(pairs)])
             out.append((k, ia, ib, np.linalg.norm(tails[ia] - tails[ib], axis=1)))
     return out
+
+
+def chain_paths(cs):
+    """每条链从根到梢的骨（有分叉时走第一个子骨）：[[i, …], …]，按链根的顺序。"""
+    first_child = {}
+    for i in range(len(cs.names)):
+        p = int(cs.parent[i])
+        if p >= 0 and p not in first_child:
+            first_child[p] = i
+    out = []
+    for r in range(len(cs.names)):
+        if cs.parent[r] >= 0:
+            continue
+        path, i = [r], r
+        while i in first_child:
+            i = first_child[i]
+            path.append(i)
+        out.append(path)
+    return out
+
+
+def mesh_pairs(cs, tails, centre, max_dist):
+    """布面的横边：各链按链根骨尾绕身体轴（centre 的 Y 轴）的角度排一圈，相邻两条（链根骨尾离得近于 max_dist；
+    首尾那一对也算，环形裙子）同一层的骨尾连起来。tails：第一帧的骨尾。返回 {层: (i 数组, j 数组, 静止长度)}。
+    上下两层交叉的斜边不连：抬腿时前片往上翻、侧片不动，布本来就要错开，斜边拉住错位会把下一层拽回腿里。"""
+    paths = chain_paths(cs)
+    if len(paths) < 2:
+        return {}
+    C = np.asarray(centre, float)
+    axis = _unit(C[:3, 1][None])[0]
+    o = C[:3, 3]
+    u = np.cross(axis, [1.0, 0.0, 0.0] if abs(axis[0]) < 0.9 else [0.0, 1.0, 0.0])
+    u = u / np.linalg.norm(u)
+    v = np.cross(axis, u)
+    ang = [math.atan2((tails[p[0]] - o) @ v, (tails[p[0]] - o) @ u) for p in paths]
+    order = [paths[k] for k in np.argsort(ang)]
+    pairs = [(order[k], order[k + 1]) for k in range(len(order) - 1)]
+    if len(order) > 2:
+        pairs.append((order[-1], order[0]))
+    pairs = [(a, b) for a, b in pairs if np.linalg.norm(tails[a[0]] - tails[b[0]]) < max_dist]
+    hor = {}
+    for a, b in pairs:
+        for k in range(min(len(a), len(b))):
+            hor.setdefault(k, []).append((a[k], b[k]))
+    out = {}
+    for k, lst in hor.items():
+        i = np.array([x for x, _y in lst], int)
+        j = np.array([y for _x, y in lst], int)
+        out[k] = (i, j, np.linalg.norm(tails[i] - tails[j], axis=1))
+    return out
+
+
+def _band(x, i, j, r0, squash, stretch):
+    """边 x[i]-x[j] 的长度拉回静止长度 r0 的 (1 - squash) ~ (1 + stretch) 倍：两头各挪一半。原地改 x，返回挪了没有。"""
+    dv = x[j] - x[i]
+    dl = np.maximum(np.linalg.norm(dv, axis=1), 1e-9)
+    lo, hi = r0 * (1.0 - squash), r0 * (1.0 + stretch)
+    err = np.where(dl > hi, dl - hi, np.where(dl < lo, dl - lo, 0.0))
+    if not np.any(err != 0.0):
+        return False
+    corr = (dv / dl[:, None]) * (0.5 * err)[:, None]
+    np.add.at(x, i, corr)
+    np.add.at(x, j, -corr)
+    return True
+
+
+def _push_segments(x, i, j, r, caps, allow=None):
+    """边 x[i]-x[j]（布面的横边）推出碰撞体：每条边取陷得最深的那个碰撞体，把边上离它最近的点推出去，挪动按那个点
+    的位置分给两头（点在 s 处：i 挪 (1-s)/w、j 挪 s/w 倍，w = (1-s)² + s²，两头一起挪，那个点正好挪到位）。
+    allow：每条边在每个碰撞体里许陷多深（静止时就陷着的）。原地改 x，返回碰到的边数。"""
+    if caps is None or len(caps[0]) == 0 or len(i) == 0:
+        return 0
+    pen, d, dist, s = _edge_pen(x[i], x[j], r, caps)
+    if allow is not None:
+        pen = pen - allow
+    m = np.argmax(pen, axis=1)
+    rows = np.arange(len(i))
+    p = pen[rows, m]
+    hit = p > 0
+    if not hit.any():
+        return 0
+    nrm = d[rows, m] / np.maximum(dist[rows, m], 1e-9)[:, None]
+    sa = s[rows, m]
+    w = np.maximum((1.0 - sa) ** 2 + sa ** 2, 1e-6)
+    move = nrm * np.where(hit, p, 0.0)[:, None]
+    np.add.at(x, i, move * ((1.0 - sa) / w)[:, None])
+    np.add.at(x, j, move * (sa / w)[:, None])
+    return int(hit.sum())
 
 
 # ---------------------------------------------------------------------------------------------- vector helpers
@@ -285,7 +386,7 @@ def simulate(cs, base, centre, colliders, fps, params=None, log=None, rest=None)
     P.update(params or {})
     unit = float(P.get("unit", 1.0))                     # the lengths and speeds in P are metres
     for k in ("gravity", "radius", "move_limit", "particle_limit", "backstop_radius", "backstop_distance",
-              "max_distance", "link_max"):
+              "max_distance", "link_max", "mesh_max", "mesh_radius"):
         P[k] = P[k] / unit
     n = len(cs.names)
     sub = max(1, int(P["substeps"]))
@@ -323,6 +424,16 @@ def simulate(cs, base, centre, colliders, fps, params=None, log=None, rest=None)
             off[i] = b0["rot"][p].T @ (b0["head"][i] - b0["head"][p])
 
     links = {k: (ia, ib, r) for k, ia, ib, r in link_pairs(cs, base[0]["tail"], P["link_max"])} if P["link"] else {}
+    mesh_h, allow_h, mesh_hits = {}, {}, 0
+    if P["mesh"]:
+        mesh_h = mesh_pairs(cs, base[0]["tail"], centre[0], P["mesh_max"])
+        links = {}                                       # 布面代替相邻链连接
+        if P["mesh_collide"] and allow_e is not None:
+            # 横边静止时就陷着多深都放过，腿里也放过（不看 allow_legs）：横边是直的，真正的布绕在腿外面，贴腿的裙子
+            # 两条链之间的弦静止时就在腿的胶囊里。骨照样推出腿，弦跟着出来；腿往两条链中间顶得更深才推
+            for k, (i, j, _r) in mesh_h.items():
+                allow_h[k] = np.maximum(_edge_pen(rest["tail"][i], rest["tail"][j],
+                                                  np.full(len(i), P["mesh_radius"]), rest["caps"])[0], 0.0)
     x = base[0]["tail"].copy()                            # particles: the bone tails
     x_old = x.copy()
     C_prev = _orthonormal(centre[0])
@@ -434,17 +545,17 @@ def simulate(cs, base, centre, colliders, fps, params=None, log=None, rest=None)
                     # neighbouring chains: keep the tails' spacing within the stretch / squash range
                     if level in links:
                         ia, ib, r0 = links[level]
-                        dv = x[ib] - x[ia]
-                        dl = np.maximum(np.linalg.norm(dv, axis=1), 1e-9)
-                        lo, hi = r0 * (1.0 - P["link_squash"]), r0 * (1.0 + P["link_stretch"])
-                        err = np.where(dl > hi, dl - hi, np.where(dl < lo, dl - lo, 0.0))
-                        if np.any(err != 0.0):
-                            corr = (dv / dl[:, None]) * (0.5 * err)[:, None]
-                            np.add.at(x, ia, corr)
-                            np.add.at(x, ib, -corr)
-                            pos = {int(b): k for k, b in enumerate(lv)}
-                            heads = h[[pos[int(b)] for b in lv]]
-                            x[lv] = heads + _unit(x[lv] - heads) * cs.length[lv][:, None]
+                        if _band(x, ia, ib, r0, P["link_squash"], P["link_stretch"]):
+                            x[lv] = h + _unit(x[lv] - h) * cs.length[lv][:, None]
+                    # 布面：横边的长度拉回范围里，再推出碰撞体；挪完骨长投回去（头已经定了）
+                    if level in mesh_h:
+                        ia, ib, r0 = mesh_h[level]
+                        _band(x, ia, ib, r0, P["mesh_squash"], P["mesh_stretch"])
+                        if P["mesh_collide"] and caps is not None:
+                            n_hit = _push_segments(x, ia, ib, np.full(len(ia), P["mesh_radius"]), caps,
+                                                   allow_h.get(level))
+                            mesh_hits += n_hit if last else 0
+                        x[lv] = h + _unit(x[lv] - h) * cs.length[lv][:, None]
                     # the floor: a hard plane, even where the animation itself goes below it (a long skirt when
                     # she crouches); the push up does not become speed, sliding on it loses the friction share
                     if P["floor"]:
@@ -488,8 +599,10 @@ def simulate(cs, base, centre, colliders, fps, params=None, log=None, rest=None)
             results.append((rot.copy(), head.copy()))
         C_prev = C_now
     if log:
-        log("bone cloth: %d bones, %d frames, %d substeps x %d iterations, %d collider contacts, %d on the floor"
-            % (n, len(base), sub, int(P["iterations"]), hits, floor_hits))
+        log("bone cloth: %d bones, %d frames, %d substeps x %d iterations, %d collider contacts, %d on the floor%s"
+            % (n, len(base), sub, int(P["iterations"]), hits, floor_hits,
+               ", surface %d edges, %d edge contacts" % (sum(len(v[0]) for v in mesh_h.values()), mesh_hits)
+               if P["mesh"] else ""))
     return results
 
 

@@ -23,7 +23,7 @@ CLOTH_KEYS = ("gravity", "damping", "radius", "restore_stiffness", "restore_atte
               "inertia", "move_limit", "turn_limit", "particle_limit", "backstop", "backstop_radius",
               "backstop_distance", "max_distance_on", "max_distance", "collision_edge", "friction", "floor",
               "floor_height", "substeps", "iterations", "blend", "colliders", "allow_legs", "link", "link_stretch",
-              "link_squash", "link_max")
+              "link_squash", "link_max", "mesh", "mesh_stretch", "mesh_squash", "mesh_collide", "mesh_radius", "mesh_max")
 KEYS = {"RIGID": [(k, k) for k in RIGID_KEYS], "SPRING": [(k, k) for k in SPRING_KEYS],
         "CLOTH": [("bc_" + k, k) for k in CLOTH_KEYS], "FOLLOW": []}
 
@@ -179,6 +179,17 @@ class MMDPhysFxCategory(PropertyGroup):
     bc_link_stretch: FloatProperty(name="可拉长", min=0.0, max=2.0, default=0.2, description="比第一帧的间距最多长多少")
     bc_link_squash: FloatProperty(name="可压短", min=0.0, max=1.0, default=0.5, description="比第一帧的间距最多短多少")
     bc_link_max: FloatProperty(name="只连近于(m)", min=0.0, soft_max=1.0, default=0.2)
+    bc_mesh: BoolProperty(name="布面", default=False,
+                          description="相邻两条链横向连成网(Magica 的 Mesh 连接):同一层的骨尾连横边,边长只许在一定范围里变;"
+                                      "横边也和腿碰,腿不会从两条链中间顶出来。开了就不用「相邻链连接」")
+    bc_mesh_stretch: FloatProperty(name="横向可拉长", min=0.0, max=2.0, default=0.1, description="比第一帧最多长多少")
+    bc_mesh_squash: FloatProperty(name="横向可压短", min=0.0, max=1.0, default=0.5, description="比第一帧最多短多少(布会折)")
+    bc_mesh_collide: BoolProperty(name="横边碰撞", default=True, description="两条链之间的布也挡腿")
+    bc_mesh_radius: FloatProperty(name="横边半径(m)", min=0.0, soft_max=0.1, default=0.05,
+                                  description="横边当胶囊的粗细。静止时就陷在碰撞体里的部分放过,加大它不改裙子的静止形状,"
+                                              "只让腿往两条链中间顶时早一点推开")
+    bc_mesh_max: FloatProperty(name="只连近于(m)", min=0.0, soft_max=1.0, default=0.25,
+                               description="两条链的链根骨尾第一帧离得比这近才连")
 
 
 class MMDPhysFxGroup(PropertyGroup):
@@ -492,6 +503,13 @@ def _draw_params(layout, cat, props):
         r.active = props.bc_max_distance_on
         r.prop(props, "bc_max_distance")
         col = layout.column(align=True)
+        col.prop(props, "bc_mesh")
+        sub = col.column(align=True)
+        sub.active = props.bc_mesh
+        for k in ("bc_mesh_stretch", "bc_mesh_squash", "bc_mesh_collide", "bc_mesh_radius", "bc_mesh_max"):
+            sub.prop(props, k)
+        col = layout.column(align=True)
+        col.active = not props.bc_mesh
         col.prop(props, "bc_link")
         sub = col.column(align=True)
         sub.active = props.bc_link

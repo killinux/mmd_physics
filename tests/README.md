@@ -12,6 +12,7 @@
 |---|---|---|
 | `MMDPHYS_BLENDER` | `D:\Program Files\blender-3.6.15-windows-x64\blender.exe` | 跑脚本的 Blender |
 | `MMDPHYS_VMD` / `MMDPHYS_WAV` | 手势舞 `适配瓦雷莎.vmd` 和它的音乐 | 动作(10 秒),视频配乐 |
+| `MMDPHYS_VMD_LEGS` / `MMDPHYS_WAV_LEGS` | 野狼disco `适配【原神】瓦雷莎.vmd` 和 `BGM.wav` | 腿动得大的舞(抬腿到 55 cm、转一整圈、前后走 1.5 米,11 秒):布面的检查和对比视频 |
 | `MMDPHYS_PMX_VINDICTUS` | Vindictus Fiona `PCF_005.pmx` | breast_physics + 36 根软组织骨;裙子 14 链、头发 36 组、羽毛 |
 | `MMDPHYS_PMX_ROE` | ROE Lynn `pc_j01_nk_bs_bustB.pmx` | 左胸 / 右胸 骨架(裸体) |
 | `MMDPHYS_PMX_TEMPLATE` | `Gantz Reika Suit 18 V1.pmx` | 乳奶模板(单根胸骨);外套的骨骼贴着腿走 |
@@ -24,14 +25,14 @@
 ## 检查(改完插件跑一遍)
 
 ```
-python tests\run_checks.py                  全部,约 35 分钟
+python tests\run_checks.py                  全部,约 40 分钟
 python tests\run_checks.py detect kawaii    只跑其中几项
 ```
 
 每项一个后台 Blender,输出 `PASS ...` / `FAIL ...`,最后汇总;有失败返回 1。完整输出在系统临时目录的
 `mmd_physics_checks\` 下。
 
-| 检查 | 脚本 | 通过的标准 | 本机结果(10-05) |
+| 检查 | 脚本 | 通过的标准 | 本机结果 |
 |---|---|---|---|
 | detect | `check_detect.py` | 三种骨架的胸链左右都认到 | Vindictus 2 条、ROE 2 条、乳奶模板 4 条单骨 |
 | kawaii | `check_kawaii.py` | 新版 `kawaii.bake()` 和 0.2.0 版([`kawaii_v020_reference.py`](kawaii_v020_reference.py))逐帧一样;别的骨架也能动 | 518 条曲线差 0 |
@@ -39,9 +40,10 @@ python tests\run_checks.py detect kawaii    只跑其中几项
 | kits | `check_kits.py` | 胸部整套换上的五个预设(RGBA、Tda、欧美转换、AH、AH 着衣用)经面板各算一遍:每条胸链建一套(刚体、关节数对,左右连着时加上左右之间的),物理步长按套件(RGBA 60 Hz,其余场景原样),主胸骨在动(常见摆幅 > 0.3°)、没炸(没有 NaN、不超过 60°),左右连着时两侧每帧偏转差 < 1°;还原后套件一个不剩、步长回到原来的 | 各套件的摆幅见插件 README「胸部多段套件」 |
 | outfit | `check_outfit.py` | 「按衣服推荐」判出来的种类和预期一样,点按钮后胸部预设换成推荐的 | PCF_005 大致跟着、PCF_008 只跟一部分、PCF_067 不带网格、ROE / 乳奶模板裸着或贴身 |
 | still | `check_still.py` | 原来不动的链(没有刚体):识别出至少 N 组;「模型原样」照旧不动(< 0.5°);新建刚体 / 弹簧骨骼 / 骨骼布料都晃起来(链根 → 梢的方向和挂点骨一起转时差的中位 > 1°)、不炸开(最大 < 75°,裙子 < 60°);还原后新建的刚体、关节一个不剩,原有的个数不变。PCF_005 用 `skirt` 参数先删掉裙子的刚体,当作没物理的裙子 | Bunny 头发 15 组:新建刚体中位 14°、最大 56°,弹簧骨骼 5.9 / 24°,骨骼布料 6.9 / 38°;Suit V2 13 组 12.7 / 52°;PCF_005 没刚体的裙子 14 组 8.4 / 36° |
-| skirt | `check_skirt.py` | 整段手势舞:裙链左右平均差 < 5°、最大偏角 < 45°(乳奶模板 50°)、链根以下的骨陷进腿胶囊 < 1 cm | PCF_005 防穿腿 右 -0.3 / 左 -0.5°、最大 7.5°;飘一点 -2.1 / -3.1°、最大 25.0°(开头保持一帧以后;之前 -3.2 / 25.1°);弹簧骨骼 9.1 / 9.0°、最大 28.1°;乳奶模板外套 31.1 / 31.0°(撑开)、最大 43.1°、陷入 0.10 cm |
+| skirt | `check_skirt.py` | 整段手势舞:裙链左右平均差 < 5°、最大偏角 < 45°(乳奶模板 50°)、链根以下的骨陷进腿胶囊 < 1 cm | 布面(0.6.0):PCF_005 防穿腿 右 1.0 / 左 0.9°、最大 34.5°(大腿往前迈时前片被托起来);飘一点 1.0 / -0.1°、最大 38.5°;弹簧骨骼 9.1 / 9.0°、最大 28.1°;乳奶模板外套 30.3 / 30.1°(撑开)、最大 41.5°、陷入 0.18 cm。相邻链连接(0.5.0):防穿腿 -0.3 / -0.5°、7.5°,飘一点 -2.1 / -3.1°、25.0°,乳奶模板 31.1 / 31.0°、43.1°、0.10 cm |
+| mesh | `check_cloth_mesh.py` | 野狼disco:两条相邻裙链之间的布(同一层两根骨围成的四边形,3×3 个点)陷进腿胶囊(减去静止时就陷着的)< 0.5 cm(乳奶模板 1.5 cm),横向拉长(骨尾间距 ÷ 静止时的)< 1.5 倍(大腿把布托起来的几帧到 1.4 倍;乳奶模板 2 倍:裙骨推出腿以后一直撑开 1.5 倍左右) | PCF_005 布 0 cm、拉长最大 1.42;乳奶模板 0.48 cm、1.88(关掉布面:1.29 cm、1.23,2.43 cm、1.99) |
 
-10-05 全部 17 项通过,约 12 分钟。
+10-11(0.6.0)全部 54 项通过,约 45 分钟(同时有别的 Blender 在跑)。
 
 单项也能直接跑,例如:
 
@@ -56,9 +58,9 @@ blender -b --factory-startup --python tests\check_skirt.py -- <pmx> 300 "SKIRT=C
 ## 对比视频
 
 ```
-python tests\demo_videos.py                 全部 9 组,约 100 分钟
+python tests\demo_videos.py                 全部 13 组,约 150 分钟
 python tests\demo_videos.py body            只出一组:bust / body / roe / template / kits / kits_roe / kits_template /
-                                            kits_ah_roe / kits_ah
+                                            kits_ah_roe / kits_ah / still_bunny / still_skirt / mesh / mesh_template
 ```
 
 每一格由 [`render_tile.py`](render_tile.py) 在后台 Blender 里渲(一次一个),再用 ffmpeg 拼成带标签的网格、配音乐:
@@ -74,6 +76,10 @@ python tests\demo_videos.py body            只出一组:bust / body / roe / tem
 | kits_template | `胸部_多段套件_4种_乳奶模板模型.mp4` | 模型原样(乳奶模板)、RGBA 式、Tda 式、欧美转换式 |
 | kits_ah_roe | `胸部_AH式_4种_ROE_j01.mp4` | bustB、AH 式原版质量(×1)、AH 式(×3)、AH 着衣用(左右连着 ×10) |
 | kits_ah | `胸部_AH式_4种_Vindictus_PCF_005.mp4` | 同上,PCF_005 |
+| still_bunny | `头发_无刚体_4种_Tifa兔女郎.mp4` | 头发没有刚体:模型原样(不动)、新建刚体、弹簧骨骼、骨骼布料;从斜后方看头和上半身(`upper:150`) |
+| still_skirt | `裙子_无刚体_4种_Vindictus_PCF_005.mp4` | 原模型的裙子刚体;删掉裙子刚体(`--strip skirt`)后:模型原样(不动)、新建刚体、骨骼布料 |
+| mesh | `裙子_布面_3种_Vindictus_PCF_005.mp4` | 野狼disco:模型原样(刚体)、骨骼布料相邻链连接(0.5.0)、骨骼布料布面(0.6.0);胸到脚(`hips`,相机只水平跟着下半身) |
+| mesh_template | `裙子_布面_3种_乳奶模板模型.mp4` | 同上,乳奶模板 |
 
 已经渲好的格子会跳过:改了插件要重渲某一格,先把 `_tiles\<组名>\NN.mp4` 挪走。
 格子的标签里不要用半角冒号、逗号(ffmpeg drawtext 的参数分隔符,后半截会被当成字体文件,中文变方框)。

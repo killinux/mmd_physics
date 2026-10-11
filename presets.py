@@ -86,18 +86,20 @@ def _k(**kw):
     return d
 
 
-# 骨骼布料的三组(和 ripper_tpose 的骨骼布料插件一样),colliders = 自动加腿和胯的胶囊碰撞体
+# 骨骼布料的三组(和 ripper_tpose 的骨骼布料插件一样),colliders = 自动加腿和胯的胶囊碰撞体。裙子开布面(mesh,
+# 相邻链横向连成网、横边也挡腿;关掉布面时用相邻链连接 link)
 _BC_SKIRT = dict(gravity=5.0, damping=0.05, radius=0.02, restore_stiffness=0.2, restore_attenuation=0.8,
                  limit_root=25.0, limit_tip=60.0, inertia=0.4, move_limit=3.0, turn_limit=360.0, particle_limit=4.0,
                  backstop=True, backstop_radius=10.0, backstop_distance=0.02, max_distance_on=False, max_distance=0.3,
                  collision_edge=True, friction=0.05, floor=True, floor_height=0.0, substeps=3, iterations=4, blend=1.0,
-                 colliders=True, allow_legs=False, link=True, link_stretch=0.2, link_squash=0.5, link_max=0.2)
+                 colliders=True, allow_legs=False, link=True, link_stretch=0.2, link_squash=0.5, link_max=0.2,
+                 mesh=True, mesh_stretch=0.1, mesh_squash=0.5, mesh_collide=True, mesh_radius=0.05, mesh_max=0.25)
 _BC_HAIR = dict(_BC_SKIRT, radius=0.015, restore_stiffness=0.3, limit_root=15.0, limit_tip=50.0, inertia=0.3,
                 move_limit=2.0, particle_limit=3.0, backstop_distance=0.01, collision_edge=False, colliders=False,
-                link=False)
+                link=False, mesh=False)
 _BC_GAME = dict(_BC_SKIRT, radius=0.015, limit_root=0.0, limit_tip=90.0, inertia=0.0, move_limit=5.0, turn_limit=720.0,
                 particle_limit=1.0, backstop=False, backstop_distance=0.0, collision_edge=False, colliders=False,
-                link=False)
+                link=False, mesh=False)
 # ROE 高级 H 场景胸部的 Magica 参数(游戏数据)。Magica 的阻尼、角度恢复实际只用设置值的 20%,这里已经换算好。
 _BC_ROE_TOUCH = dict(_BC_HAIR, gravity=0.0, damping=0.0, radius=0.003, restore_stiffness=0.03, restore_attenuation=0.0,
                      limit_root=35.0, limit_tip=0.0, inertia=1.0, move_limit=5.0, turn_limit=720.0, particle_limit=4.0,
@@ -235,12 +237,12 @@ FX = {
          _k(stiffness=0.2, damping=0.3, limit_angle=0.0, radius_cm=4.0, tip=1.0, colliders=True)),
     ],
     ("SKIRT", "CLOTH"): [
-        ("skirt", "裙子(防穿腿)", "骨骼布料插件的裙子预设:角度恢复 0.2、背挡、腿和胯的碰撞体、相邻链连接",
+        ("skirt", "裙子(防穿腿)", "骨骼布料插件的裙子预设:角度恢复 0.2、背挡、腿和胯的碰撞体、布面",
          dict(_BC_SKIRT)),
-        ("roe_game", "ROE 游戏原值", "ROE 自己的 Magica 数值(很稳),加腿和胯的碰撞体、相邻链连接",
-         dict(_BC_GAME, colliders=True, link=True)),
+        ("roe_game", "ROE 游戏原值", "ROE 自己的 Magica 数值(很稳),加腿和胯的碰撞体、布面",
+         dict(_BC_GAME, colliders=True, link=True, mesh=True)),
         ("lively", "飘一点", "角度恢复 0.04(Magica 默认 0.2 实际只用 20%)、根 / 梢限角 45 / 80°、惯性 0.6;"
-         "带腿和胯的碰撞体、相邻链连接。手势舞里最大摆 25°,防穿腿预设只摆 7°",
+         "带腿和胯的碰撞体、布面。手势舞里裙片平均偏离动画 6.6°,防穿腿预设 3.3°",
          dict(_BC_SKIRT, restore_stiffness=0.04, restore_attenuation=0.5, limit_root=45.0, limit_tip=80.0,
               inertia=0.6)),
     ],

@@ -1,11 +1,11 @@
 """效果对比视频:每一格用 render_tile.py 在后台 Blender 里渲(一次一个),再用 ffmpeg 拼成带标签的网格,配舞蹈音乐。
 
-    python demo_videos.py [bust|body|roe|template|kits|kits_roe|kits_template|still_bunny|still_skirt ...]
-                                                                                       (不写 = 全部)
+    python demo_videos.py [bust|body|roe|template|kits|kits_roe|kits_template|still_bunny|still_skirt|
+                           mesh|mesh_template ...]                                     (不写 = 全部)
 
 输出在 config.OUT:<名字>.mp4,每一格在 _tiles/<名字>/NN.mp4(+ .log)。已经有的格子跳过:
 改了插件要重渲某一格,先把那一格的 mp4 挪走。模型、动作、Blender 的路径见 config.py。
-格子 = (标签, 配置串) 或 (标签, 配置串, 先删掉哪些骨上的刚体的正则)。
+格子 = (标签, 配置串) 或 (标签, 配置串, 先删掉哪些骨上的刚体的正则)。一组可以用别的舞(vmd、wav,默认手势舞)。
 """
 import os
 import subprocess
@@ -88,12 +88,25 @@ DEMOS = {
         ("骨骼布料 · 头发", "HAIR=CLOTH:hair"),
     ]),
     # PCF_005 的裙子删掉刚体当作没物理的裙子,和原模型的裙子刚体比
-    "still_skirt": dict(name="裙子_无刚体_4种_Vindictus_PCF_005", view="full:25", size=480, cols=4, pmx=M["vindictus"],
+    "still_skirt": dict(name="裙子_无刚体_4种_Vindictus_PCF_005", view="hips:20", size=480, cols=4, pmx=M["vindictus"],
                         tiles=[
         ("原模型的裙子刚体(对照)", ""),
         ("删掉裙子刚体 · 模型原样(不动)", "", "skirt"),
         ("删掉裙子刚体 · 新建刚体", "SKIRT=RIGID:build", "skirt"),
         ("删掉裙子刚体 · 骨骼布料(防穿腿)", "SKIRT=CLOTH:skirt", "skirt"),
+    ]),
+    # 骨骼布料的布面(0.6.0):腿动得大的舞(抬腿 55 cm、转一整圈),和布面以前的相邻链连接、原模型的刚体比
+    "mesh": dict(name="裙子_布面_3种_Vindictus_PCF_005", view="hips:20", size=480, cols=3, pmx=M["vindictus"],
+                 vmd=config.VMD_LEGS, wav=config.WAV_LEGS, tiles=[
+        ("MMD 刚体 · 模型原样", ""),
+        ("骨骼布料 · 相邻链连接(0.5.0)", "SKIRT=CLOTH:skirt,SKIRT.bc_mesh=0"),
+        ("骨骼布料 · 布面(0.6.0)", "SKIRT=CLOTH:skirt"),
+    ]),
+    "mesh_template": dict(name="裙子_布面_3种_乳奶模板模型", view="hips:20", size=480, cols=3, pmx=M["template"],
+                          vmd=config.VMD_LEGS, wav=config.WAV_LEGS, tiles=[
+        ("MMD 刚体 · 模型原样", ""),
+        ("骨骼布料 · 相邻链连接(0.5.0)", "SKIRT=CLOTH:skirt,SKIRT.bc_mesh=0"),
+        ("骨骼布料 · 布面(0.6.0)", "SKIRT=CLOTH:skirt"),
     ]),
 }
 
@@ -109,7 +122,8 @@ def render(demo, k, label, spec, strip=""):
     if os.path.isfile(out) and os.path.getsize(out) > 10000:
         return out
     cmd = [config.BLENDER, "-b", "--factory-startup", "--python", os.path.join(HERE, "render_tile.py"), "--",
-           "--pmx", demo["pmx"], "--vmd", config.VMD, "--wav", config.WAV, "--out", out, "--view", demo["view"],
+           "--pmx", demo["pmx"], "--vmd", demo.get("vmd", config.VMD), "--wav", demo.get("wav", config.WAV),
+           "--out", out, "--view", demo["view"],
            "--config", spec, "--size", str(demo["size"])] + (["--strip", strip] if strip else [])
     t = time.time()
     with open(out + ".log", "w", encoding="utf-8", errors="replace") as fh:

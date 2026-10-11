@@ -150,22 +150,25 @@ def appendix(kits, fx, breast):
     out += ["### B.4 骨骼布料(Magica Cloth 2 风格)", "",
             "和独立的「骨骼布料」插件同名同义,长度单位米。", "",
             "| 类 | 预设 | 重力 | 阻尼 | 质点半径 | 角度恢复 / 恢复速度衰减 | 角度限制 根 / 梢° | 惯性 | 移动 / 转动 / 质点限速 "
-            "| 背挡 | 边碰撞 | 腿胯碰撞 | 相邻链连接 |",
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+            "| 背挡 | 边碰撞 | 腿胯碰撞 | 布面 | 相邻链连接 |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     rest = None
     for cat in CAT:
         for _k, label, _d, v in fx.get((cat, "CLOTH"), []):
-            out.append("| %s | %s | %s | %s | %s | %s / %s | %s / %s | %s | %s / %s / %s | %s | %s | %s | %s |" % (
+            out.append("| %s | %s | %s | %s | %s | %s / %s | %s / %s | %s | %s / %s / %s | %s | %s | %s | %s | %s |" % (
                 CAT[cat], label, n(v["gravity"]), n(v["damping"]), n(v["radius"]), n(v["restore_stiffness"]),
                 n(v["restore_attenuation"]), n(v["limit_root"]), n(v["limit_tip"]), n(v["inertia"]), n(v["move_limit"]),
                 n(v["turn_limit"]), n(v["particle_limit"]),
                 ("距离 %s" % n(v["backstop_distance"])) if v["backstop"] else "关", "开" if v["collision_edge"] else "关",
-                "开" if v["colliders"] else "关", "开" if v["link"] else "关"))
+                "开" if v["colliders"] else "关", "开" if v["mesh"] else "关",
+                "关着布面时开" if v["link"] and v["mesh"] else "开" if v["link"] else "关"))
             rest = v
-    out += ["", "其余几项各预设都一样:摩擦 %s、地面%s(高度 %s)、子步数 %d、迭代 %d、混合 %s;相邻链连接的可拉长 %s、"
-            "可压短 %s、只连近于 %s 米。" % (n(rest["friction"]), "开" if rest["floor"] else "关", n(rest["floor_height"]),
-                                     rest["substeps"], rest["iterations"], n(rest["blend"]), n(rest["link_stretch"]),
-                                     n(rest["link_squash"]), n(rest["link_max"])), ""]
+    out += ["", "其余几项各预设都一样:摩擦 %s、地面%s(高度 %s)、子步数 %d、迭代 %d、混合 %s;布面的横向可拉长 %s、"
+            "可压短 %s、横边碰撞%s(横边半径 %s 米)、只连近于 %s 米;相邻链连接的可拉长 %s、可压短 %s、只连近于 %s 米。" % (
+                n(rest["friction"]), "开" if rest["floor"] else "关", n(rest["floor_height"]), rest["substeps"],
+                rest["iterations"], n(rest["blend"]), n(rest["mesh_stretch"]), n(rest["mesh_squash"]),
+                "开" if rest["mesh_collide"] else "关", n(rest["mesh_radius"]), n(rest["mesh_max"]),
+                n(rest["link_stretch"]), n(rest["link_squash"]), n(rest["link_max"])), ""]
     out += ["### B.5 胸部刚体调参(导出 PMX 用)的预设", "",
             "| 预设 | 物理演算 | 质量 | 移動 / 回転減衰 | 反発力 / 摩擦力 | 回転制限 ±°(三轴) | ばね定数-回転(三轴) |",
             "|---|---|---|---|---|---|---|"]
